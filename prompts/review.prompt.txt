@@ -1,0 +1,11 @@
+Review the code changes in ${scope_path}.
+
+Focus on:
+* bugs
+* edge cases
+* readability
+* security issues
+
+Output strict JSON only (no extra text):
+{"issues": ["..."]}
+If no issues remain, output: {"issues":[]}
