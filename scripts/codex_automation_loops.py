@@ -3,27 +3,41 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shlex
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from string import Template
 
-PROMPT_ARG_CACHE: dict[str, str] = {}
+SCRIPT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_PROMPT_DIR = SCRIPT_ROOT / "prompts"
+CODEX_EXEC_CMD = ["codex", "exec", "--skip-git-repo-check"]
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Automate codex-cli loops (fast-fail mode).")
+    parser = argparse.ArgumentParser(description="Automate codex loops (fast-fail mode).")
     sub = parser.add_subparsers(dest="mode", required=True)
 
     def add_common(p: argparse.ArgumentParser, need_spec: bool = False) -> None:
         if need_spec:
-            p.add_argument("--spec", required=True, help="Path to xxx.md spec file")
+            p.add_argument(
+                "--spec",
+                required=True,
+                help="Spec reference path (file or directory, no type validation)",
+            )
+            p.add_argument(
+                "--implement-extra-prompt",
+                default="",
+                help="Extra instruction text appended into implement_initial prompt",
+            )
+        p.add_argument("--project-root", default=".", help="Target project root directory")
         p.add_argument("--state-dir", default=".codex-loop-state", help="State directory")
         p.add_argument("--max-iterations", type=int, default=20, help="Maximum iterations")
-        p.add_argument("--prompt-dir", default="prompts", help="Prompt template directory")
-        p.add_argument("--codex-cmd", default=None, help="Override CODEX_CMD / codex-cli")
+        p.add_argument(
+            "--prompt-dir",
+            default=str(DEFAULT_PROMPT_DIR),
+            help="Prompt template directory (absolute, or relative to project root)",
+        )
 
     add_common(sub.add_parser("implement-loop"), need_spec=True)
     add_common(sub.add_parser("review-loop"))
@@ -42,59 +56,58 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def run_codex(codex_cmd: str, prompt: str, prompt_file: Path, out_file: Path) -> None:
-    tokens = shlex.split(codex_cmd)
-    if not tokens:
-        raise ValueError("Empty codex command")
-
-    used_placeholder = False
-    resolved: list[str] = []
-    for token in tokens:
-        if "{PROMPT_FILE}" in token:
-            token = token.replace("{PROMPT_FILE}", str(prompt_file))
-            used_placeholder = True
-        if "{PROMPT}" in token:
-            token = token.replace("{PROMPT}", prompt)
-            used_placeholder = True
-        resolved.append(token)
-
-    if not used_placeholder:
-        prompt_mode = discover_prompt_mode(tokens)
-        if prompt_mode == "prompt-file":
-            resolved.extend(["--prompt-file", str(prompt_file)])
-        elif prompt_mode == "prompt":
-            resolved.extend(["--prompt", prompt])
-        else:
-            raise RuntimeError("Unable to determine prompt argument mode for codex command")
-
-    result = subprocess.run(resolved, capture_output=True, text=True, check=False)
-    write_text(out_file, result.stdout)
-
-    if result.returncode != 0:
-        err = out_file.with_suffix(out_file.suffix + ".stderr")
-        write_text(err, result.stderr)
-        raise RuntimeError(f"codex failed: exit={result.returncode}, stderr={err}")
+def resolve_path(path_value: str | Path, base_dir: Path) -> Path:
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path.resolve()
 
 
-def discover_prompt_mode(tokens: list[str]) -> str:
-    cache_key = " ".join(tokens)
-    if cache_key in PROMPT_ARG_CACHE:
-        return PROMPT_ARG_CACHE[cache_key]
+def make_codex_log_path(task_log_dir: Path, task_type: str, iteration: int) -> Path:
+    start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    return task_log_dir / f"{task_type}__iter{iteration:02d}__{start_ts}.log"
 
-    help_result = subprocess.run(tokens + ["--help"], capture_output=True, text=True, check=False)
-    help_text = f"{help_result.stdout}\n{help_result.stderr}"
 
-    if "--prompt-file" in help_text:
-        PROMPT_ARG_CACHE[cache_key] = "prompt-file"
-        return "prompt-file"
-    if "--prompt" in help_text:
-        PROMPT_ARG_CACHE[cache_key] = "prompt"
-        return "prompt"
-
-    raise RuntimeError(
-        f"Cannot find --prompt-file/--prompt in help output for command: {cache_key}. "
-        "Set --codex-cmd with {PROMPT} or {PROMPT_FILE} explicitly."
+def run_codex(
+    project_root: Path,
+    prompt: str,
+    out_file: Path,
+    task_log_dir: Path,
+    task_type: str,
+    iteration: int,
+) -> Path:
+    log_path = make_codex_log_path(task_log_dir, task_type, iteration)
+    process = subprocess.Popen(
+        CODEX_EXEC_CMD + ["--cd", str(project_root), "--output-last-message", str(out_file), "-"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=project_root,
     )
+
+    assert process.stdin is not None
+    assert process.stdout is not None
+
+    with log_path.open("wb") as log_file:
+        process.stdin.write(prompt.encode("utf-8"))
+        process.stdin.close()
+
+        while True:
+            chunk = process.stdout.read(8192)
+            if not chunk:
+                break
+            # Keep raw codex output as-is while duplicating it to terminal and log file.
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+            log_file.write(chunk)
+            log_file.flush()
+
+    return_code = process.wait()
+    if return_code != 0:
+        raise RuntimeError(f"codex failed: exit={return_code}, log={log_path}")
+    if not out_file.is_file():
+        raise RuntimeError(f"codex output file missing: {out_file}, log={log_path}")
+    return log_path
 
 
 def parse_str_list_json(text: str, required_field: str) -> list[str]:
@@ -120,51 +133,15 @@ def render_to_state(state_dir: Path, filename: str, content: str) -> Path:
     return path
 
 
-def build_scope_diff(state_dir: Path) -> Path:
-    scope_path = state_dir / "scope.diff"
-
-    tracked = subprocess.run(
-        ["git", "diff", "--no-color", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if tracked.returncode != 0:
-        raise RuntimeError("git diff HEAD failed")
-
-    untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-        capture_output=True,
-        check=False,
-    )
-    if untracked.returncode != 0:
-        raise RuntimeError("git ls-files --others failed")
-
-    diff_parts: list[str] = [tracked.stdout]
-    untracked_files = [p for p in untracked.stdout.decode("utf-8", errors="strict").split("\x00") if p]
-    for rel_path in untracked_files:
-        udiff = subprocess.run(
-            ["git", "diff", "--no-color", "--no-index", "/dev/null", rel_path],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if udiff.returncode not in (0, 1):
-            raise RuntimeError(f"git diff --no-index failed for untracked file: {rel_path}")
-        diff_parts.append(udiff.stdout)
-
-    merged = "".join(diff_parts).strip()
-    if not merged:
-        raise RuntimeError("scope.diff is empty; review-loop requires tracked/staged/untracked changes")
-
-    write_text(scope_path, merged + "\n")
-    return scope_path
-
-
-def implement_loop(spec: Path, state_dir: Path, prompt_dir: Path, codex_cmd: str, max_iterations: int) -> None:
-    if not spec.is_file():
-        raise FileNotFoundError(f"Spec file not found: {spec}")
-
+def implement_loop(
+    spec: Path,
+    project_root: Path,
+    state_dir: Path,
+    task_log_dir: Path,
+    prompt_dir: Path,
+    max_iterations: int,
+    implement_extra_prompt: str,
+) -> None:
     initial_tpl = load_template(prompt_dir, "implement_initial.prompt.txt")
     continue_tpl = load_template(prompt_dir, "implement_continue.prompt.txt")
     check_tpl = load_template(prompt_dir, "check.prompt.txt")
@@ -173,32 +150,48 @@ def implement_loop(spec: Path, state_dir: Path, prompt_dir: Path, codex_cmd: str
     write_text(todo_file, "")
 
     for i in range(1, max_iterations + 1):
-        print(f"[implement-loop] iteration {i}")
+        print(f"[implement-loop] iteration {i}", flush=True)
 
         if i == 1:
-            implement_prompt = initial_tpl.safe_substitute(spec=str(spec))
+            implement_prompt = initial_tpl.safe_substitute(
+                spec=str(spec),
+                implement_extra_prompt=implement_extra_prompt,
+            )
         else:
             implement_prompt = continue_tpl.safe_substitute(todo=todo_file.read_text(encoding="utf-8"))
 
-        implement_prompt_file = render_to_state(state_dir, "implement_prompt.txt", implement_prompt)
-        run_codex(codex_cmd, implement_prompt, implement_prompt_file, state_dir / f"implement_{i}.out")
+        render_to_state(state_dir, "implement_prompt.txt", implement_prompt)
+        run_codex(
+            project_root,
+            implement_prompt,
+            state_dir / f"implement_{i}.out",
+            task_log_dir,
+            "implement",
+            i,
+        )
 
         check_prompt = check_tpl.safe_substitute(spec=str(spec))
-        check_prompt_file = render_to_state(state_dir, "check_prompt.txt", check_prompt)
+        render_to_state(state_dir, "check_prompt.txt", check_prompt)
         check_out = state_dir / f"check_{i}.out"
-        run_codex(codex_cmd, check_prompt, check_prompt_file, check_out)
+        run_codex(project_root, check_prompt, check_out, task_log_dir, "check", i)
 
         todo = parse_str_list_json(check_out.read_text(encoding="utf-8"), "todo")
         write_text(todo_file, "\n".join(todo))
 
         if not todo:
-            print(f"[implement-loop] {spec} fully implemented.")
+            print(f"[implement-loop] {spec} fully implemented.", flush=True)
             return
 
     raise RuntimeError(f"[implement-loop] reached max iterations: {max_iterations}")
 
 
-def review_loop(state_dir: Path, prompt_dir: Path, codex_cmd: str, max_iterations: int) -> None:
+def review_loop(
+    project_root: Path,
+    state_dir: Path,
+    task_log_dir: Path,
+    prompt_dir: Path,
+    max_iterations: int,
+) -> None:
     review_tpl = load_template(prompt_dir, "review.prompt.txt")
     fix_tpl = load_template(prompt_dir, "fix.prompt.txt")
 
@@ -206,44 +199,68 @@ def review_loop(state_dir: Path, prompt_dir: Path, codex_cmd: str, max_iteration
     write_text(issues_file, "")
 
     for i in range(1, max_iterations + 1):
-        print(f"[review-loop] iteration {i}")
+        print(f"[review-loop] iteration {i}", flush=True)
 
-        scope_path = build_scope_diff(state_dir)
-        review_prompt = review_tpl.safe_substitute(scope_path=str(scope_path))
-        review_prompt_file = render_to_state(state_dir, "review_prompt.txt", review_prompt)
+        review_prompt = review_tpl.safe_substitute()
+        render_to_state(state_dir, "review_prompt.txt", review_prompt)
         review_out = state_dir / f"review_{i}.out"
-        run_codex(codex_cmd, review_prompt, review_prompt_file, review_out)
+        run_codex(project_root, review_prompt, review_out, task_log_dir, "review", i)
 
         issues = parse_str_list_json(review_out.read_text(encoding="utf-8"), "issues")
         write_text(issues_file, "\n".join(issues))
 
         if not issues:
-            print("[review-loop] all issues fixed.")
+            print("[review-loop] all issues fixed.", flush=True)
             return
 
         fix_prompt = fix_tpl.safe_substitute(issues=issues_file.read_text(encoding="utf-8"))
-        fix_prompt_file = render_to_state(state_dir, "fix_prompt.txt", fix_prompt)
-        run_codex(codex_cmd, fix_prompt, fix_prompt_file, state_dir / f"fix_{i}.out")
+        render_to_state(state_dir, "fix_prompt.txt", fix_prompt)
+        run_codex(project_root, fix_prompt, state_dir / f"fix_{i}.out", task_log_dir, "fix", i)
 
     raise RuntimeError(f"[review-loop] reached max iterations: {max_iterations}")
 
 
 def main() -> int:
     args = parse_args()
-    state_dir = Path(args.state_dir)
-    prompt_dir = Path(args.prompt_dir)
-    state_dir.mkdir(parents=True, exist_ok=True)
+    project_root = resolve_path(args.project_root, Path.cwd())
+    if not project_root.is_dir():
+        print(f"Project root not found: {project_root}", file=sys.stderr)
+        return 2
 
-    codex_cmd = args.codex_cmd or os.environ.get("CODEX_CMD", "codex-cli")
+    state_dir = resolve_path(args.state_dir, project_root)
+    prompt_dir = resolve_path(args.prompt_dir, project_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    task_start_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    task_log_dir = state_dir / "logs" / f"{args.mode}__{task_start_ts}"
+    task_log_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[logs] task log dir: {task_log_dir}", flush=True)
 
     try:
         if args.mode == "implement-loop":
-            implement_loop(Path(args.spec), state_dir, prompt_dir, codex_cmd, args.max_iterations)
+            spec_path = resolve_path(args.spec, project_root)
+            implement_loop(
+                spec_path,
+                project_root,
+                state_dir,
+                task_log_dir,
+                prompt_dir,
+                args.max_iterations,
+                args.implement_extra_prompt,
+            )
         elif args.mode == "review-loop":
-            review_loop(state_dir, prompt_dir, codex_cmd, args.max_iterations)
+            review_loop(project_root, state_dir, task_log_dir, prompt_dir, args.max_iterations)
         elif args.mode == "all":
-            implement_loop(Path(args.spec), state_dir, prompt_dir, codex_cmd, args.max_iterations)
-            review_loop(state_dir, prompt_dir, codex_cmd, args.max_iterations)
+            spec_path = resolve_path(args.spec, project_root)
+            implement_loop(
+                spec_path,
+                project_root,
+                state_dir,
+                task_log_dir,
+                prompt_dir,
+                args.max_iterations,
+                args.implement_extra_prompt,
+            )
+            review_loop(project_root, state_dir, task_log_dir, prompt_dir, args.max_iterations)
         else:
             raise ValueError(f"Unknown mode: {args.mode}")
     except Exception as exc:

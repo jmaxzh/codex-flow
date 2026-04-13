@@ -1,4 +1,5 @@
-Review the code changes in ${scope_path}.
+Review all current code changes in the project working tree.
+Do not paste or restate full code blocks in your response.
 
 Focus on:
 * bugs

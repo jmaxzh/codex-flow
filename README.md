@@ -1,4 +1,4 @@
-# codex-cli 自动闭环脚本（Fast-Fail / 极简字段）
+# codex 自动闭环脚本（Fast-Fail / 极简字段）
 
 `scripts/codex_automation_loops.py` 提供两个独立循环：
 
@@ -37,13 +37,7 @@
 
 ## 审查对象绑定
 
-`review-loop` 每轮会先生成 `scope.diff`，包含以下全部变更，并传入 review 提示词：
-
-- 未跟踪（untracked）文件
-- 暂存区（staged）变更
-- 工作区未暂存（unstaged）变更
-
-- 若 `scope.diff` 为空：立即失败退出。
+`review-loop` 每轮直接审查目标项目当前工作区变更，不再通过 `scope.diff` 注入完整代码差异。
 
 ## 提示词文件
 
@@ -59,38 +53,35 @@
 
 ```bash
 # 实现闭环
-python3 scripts/codex_automation_loops.py implement-loop --spec docs/xxx.md
+python3 scripts/codex_automation_loops.py implement-loop --project-root /path/to/target --spec docs/xxx.md
+python3 scripts/codex_automation_loops.py implement-loop --project-root /path/to/target --spec openspec/changes/xxx
+
+# 实现闭环（注入额外提示词）
+python3 scripts/codex_automation_loops.py implement-loop --project-root /path/to/target --spec docs/xxx.md \
+  --implement-extra-prompt "使用 skill openspec-apply-change，按 tasks.md 逐项实现"
 
 # review/fix 闭环
-python3 scripts/codex_automation_loops.py review-loop
+python3 scripts/codex_automation_loops.py review-loop --project-root /path/to/target
 
 # 顺序执行两套闭环
-python3 scripts/codex_automation_loops.py all --spec docs/xxx.md
+python3 scripts/codex_automation_loops.py all --project-root /path/to/target --spec docs/xxx.md
 ```
 
 可选参数：
 
+- `--project-root`（默认当前目录；所有 git/codex 在该目录执行）
 - `--state-dir`（默认 `.codex-loop-state`）
 - `--max-iterations`（默认 `20`）
-- `--prompt-dir`（默认 `prompts`）
-- `--codex-cmd`（默认 `CODEX_CMD` 或 `codex-cli`）
+- `--prompt-dir`（默认脚本内置 `prompts/` 绝对路径；也可传相对 `project-root` 的路径）
+- `--implement-extra-prompt`（仅 `implement-loop` / `all`；注入到 `implement_initial.prompt.txt` 的 `${implement_extra_prompt}`）
+- `--spec`（仅 `implement-loop` / `all`；支持文件或目录，不做类型校验）
 
-## CODEX_CMD
+## 固定执行命令
 
-支持占位符：
-
-- `{PROMPT}`：完整提示词文本
-- `{PROMPT_FILE}`：提示词文件路径
-
-如果 `CODEX_CMD` 未使用占位符，脚本会先执行 `<codex_cmd> --help` 自动识别参数：
-
-- 若存在 `--prompt-file`，使用 `--prompt-file <path>`
-- 否则若存在 `--prompt`，使用 `--prompt <text>`
-- 两者都不存在则立即失败退出（fast-fail）
-
-示例：
+脚本已固定调用本机 `codex` 的非交互模式：
 
 ```bash
-CODEX_CMD='codex-cli run --non-interactive --prompt-file {PROMPT_FILE}' \
-  python3 scripts/codex_automation_loops.py all --spec docs/xxx.md
+codex exec --skip-git-repo-check --cd <project-root> --output-last-message <out-file> -
 ```
+
+提示词通过 stdin 传入，最终回答写入 `<out-file>`，并按严格 JSON 解析。
