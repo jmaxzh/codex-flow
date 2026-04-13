@@ -1,0 +1,66 @@
+version: 1
+
+run:
+  project_root: .
+  state_dir: .codex-loop-state
+  max_steps: 20
+
+executor:
+  cmd: ["codex", "exec", "--skip-git-repo-check"]
+
+context:
+  static:
+    spec: "docs/prefect-codex-orchestrator-plan.md"
+    coding_rules: |
+      输出必须是 JSON object，且必须包含 pass:boolean。
+
+workflow:
+  start: plan
+  nodes:
+    - id: plan
+      prompt: |
+        你是规划器。
+        输入规格: {{inputs.spec}}
+        规则: {{inputs.coding_rules}}
+        请产出执行计划。
+        输出 JSON object，至少包含：
+        {
+          "pass": true/false,
+          "plan_summary": "...",
+          "tasks": ["..."]
+        }
+      input_map:
+        spec: context.static.spec
+        coding_rules: context.static.coding_rules
+      on_success: implement
+      on_failure: END
+
+    - id: implement
+      prompt: |
+        根据规划结果执行。
+        规划输出: {{inputs.plan_output}}
+        输出 JSON object，至少包含：
+        {
+          "pass": true/false,
+          "change_summary": "...",
+          "risks": ["..."]
+        }
+      input_map:
+        plan_output: outputs.plan
+      on_success: verify
+      on_failure: END
+
+    - id: verify
+      prompt: |
+        验证实现结果。
+        实现输出: {{inputs.impl_output}}
+        输出 JSON object，至少包含：
+        {
+          "pass": true/false,
+          "verification": "...",
+          "todo": ["..."]
+        }
+      input_map:
+        impl_output: outputs.implement
+      on_success: END
+      on_failure: END

@@ -8,8 +8,9 @@
 4. 工作流完全由配置定义任意节点与跳转。
 5. 输出契约固定：每个节点输出必须是 JSON object，且必须有 `pass: boolean`。
 6. 路由固定：`pass=true -> on_success`，`pass=false -> on_failure`。
-7. 节点完整 JSON 原样透传给后续节点使用。
-8. `codex-cli` 作为执行器，Prefect 作为编排与可观测层。
+7. 默认策略采用显式 fail-fast：失败分支应直接路由到 `END`，避免隐式修复环。
+8. 节点完整 JSON 原样透传给后续节点使用。
+9. `codex-cli` 作为执行器，Prefect 作为编排与可观测层。
 
 ## 2. 配置 DSL（最小通用版）
 
@@ -48,7 +49,7 @@ workflow:
       input_map:
         plan_output: "outputs.plan"
       on_success: verify
-      on_failure: fix
+      on_failure: END
 
     - id: verify
       prompt: |
@@ -57,15 +58,6 @@ workflow:
       input_map:
         impl_output: "outputs.implement"
       on_success: END
-      on_failure: fix
-
-    - id: fix
-      prompt: |
-        根据失败信息修复。验证输出: {{inputs.verify_output}}
-        输出 JSON，必须包含 pass 字段。
-      input_map:
-        verify_output: "outputs.verify"
-      on_success: verify
       on_failure: END
 ```
 
@@ -113,8 +105,9 @@ workflow:
 规则：
 1. `pass_flag=True` -> `node.on_success`
 2. `pass_flag=False` -> `node.on_failure`
-3. `END` 表示流程结束。
-4. 目标节点不存在则 fast-fail。
+3. fail-fast 配置中，`on_failure` 应显式指向 `END`。
+4. `END` 表示流程结束。
+5. 目标节点不存在则 fast-fail。
 
 ## 4. Prefect 编排结构
 
