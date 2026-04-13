@@ -142,9 +142,9 @@ def implement_loop(
     max_iterations: int,
     implement_extra_prompt: str,
 ) -> None:
-    initial_tpl = load_template(prompt_dir, "implement_initial.prompt.txt")
-    continue_tpl = load_template(prompt_dir, "implement_continue.prompt.txt")
-    check_tpl = load_template(prompt_dir, "check.prompt.txt")
+    initial_tpl = load_template(prompt_dir, "implement_initial.prompt.md")
+    continue_tpl = load_template(prompt_dir, "implement_continue.prompt.md")
+    check_tpl = load_template(prompt_dir, "check.prompt.md")
 
     todo_file = state_dir / "todo.txt"
     write_text(todo_file, "")
@@ -192,8 +192,8 @@ def review_loop(
     prompt_dir: Path,
     max_iterations: int,
 ) -> None:
-    review_tpl = load_template(prompt_dir, "review.prompt.txt")
-    fix_tpl = load_template(prompt_dir, "fix.prompt.txt")
+    review_tpl = load_template(prompt_dir, "review.prompt.md")
+    fix_tpl = load_template(prompt_dir, "fix.prompt.md")
 
     issues_file = state_dir / "issues.txt"
     write_text(issues_file, "")

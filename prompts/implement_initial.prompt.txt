@@ -1,3 +1,0 @@
-根据 ${spec} 实施。
-${implement_extra_prompt}
-只执行实施，不做检查。

@@ -43,11 +43,11 @@
 
 `prompts/` 下为独立模板：
 
-- `implement_initial.prompt.txt`
-- `implement_continue.prompt.txt`
-- `check.prompt.txt`
-- `review.prompt.txt`
-- `fix.prompt.txt`
+- `implement_initial.prompt.md`
+- `implement_continue.prompt.md`
+- `check.prompt.md`
+- `review.prompt.md`
+- `fix.prompt.md`
 
 ## 用法
 
@@ -73,7 +73,7 @@ python3 scripts/codex_automation_loops.py all --project-root /path/to/target --s
 - `--state-dir`（默认 `.codex-loop-state`）
 - `--max-iterations`（默认 `20`）
 - `--prompt-dir`（默认脚本内置 `prompts/` 绝对路径；也可传相对 `project-root` 的路径）
-- `--implement-extra-prompt`（仅 `implement-loop` / `all`；注入到 `implement_initial.prompt.txt` 的 `${implement_extra_prompt}`）
+- `--implement-extra-prompt`（仅 `implement-loop` / `all`；注入到 `implement_initial.prompt.md` 的 `${implement_extra_prompt}`）
 - `--spec`（仅 `implement-loop` / `all`；支持文件或目录，不做类型校验）
 
 ## 固定执行命令
