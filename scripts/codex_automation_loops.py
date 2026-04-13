@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
             p.add_argument(
                 "--implement-extra-prompt",
                 default="",
-                help="Extra instruction text appended into implement_initial prompt",
+                help="Extra instruction text used as implement instruction (overrides default when set)",
             )
         if need_review_extra_prompt:
             p.add_argument(
@@ -155,6 +155,7 @@ def implement_loop(
     initial_tpl = load_template(prompt_dir, "implement_initial.prompt.md")
     continue_tpl = load_template(prompt_dir, "implement_continue.prompt.md")
     check_tpl = load_template(prompt_dir, "check.prompt.md")
+    implement_instruction = implement_extra_prompt.strip() or f"根据 {spec} 实施。"
 
     todo_file = state_dir / "todo.txt"
     write_text(todo_file, "")
@@ -164,8 +165,7 @@ def implement_loop(
 
         if i == 1:
             implement_prompt = initial_tpl.safe_substitute(
-                spec=str(spec),
-                implement_extra_prompt=implement_extra_prompt,
+                implement_instruction=implement_instruction,
             )
         else:
             implement_prompt = continue_tpl.safe_substitute(todo=todo_file.read_text(encoding="utf-8"))

@@ -78,7 +78,7 @@ python3 scripts/codex_automation_loops.py all --project-root /path/to/target --s
 - `--state-dir`（默认 `.codex-loop-state`）
 - `--max-iterations`（默认 `20`）
 - `--prompt-dir`（默认脚本内置 `prompts/` 绝对路径；也可传相对 `project-root` 的路径）
-- `--implement-extra-prompt`（仅 `implement-loop` / `all`；注入到 `implement_initial.prompt.md` 的 `${implement_extra_prompt}`）
+- `--implement-extra-prompt`（仅 `implement-loop` / `all`；注入到 `implement_initial.prompt.md` 的 `${implement_instruction}`。传入后会覆盖默认“根据 <spec> 实施。”）
 - `--review-extra-prompt`（仅 `review-loop` / `all`；注入到 `review.prompt.md` 的 `${review_scope_instruction}`。传入后会覆盖默认“请查看项目工作树中的所有代码变更。”）
 - `--spec`（仅 `implement-loop` / `all`；支持文件或目录，不做类型校验）
 
