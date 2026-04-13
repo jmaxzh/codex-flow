@@ -18,7 +18,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Automate codex loops (fast-fail mode).")
     sub = parser.add_subparsers(dest="mode", required=True)
 
-    def add_common(p: argparse.ArgumentParser, need_spec: bool = False) -> None:
+    def add_common(
+        p: argparse.ArgumentParser,
+        need_spec: bool = False,
+        need_review_extra_prompt: bool = False,
+    ) -> None:
         if need_spec:
             p.add_argument(
                 "--spec",
@@ -30,6 +34,12 @@ def parse_args() -> argparse.Namespace:
                 default="",
                 help="Extra instruction text appended into implement_initial prompt",
             )
+        if need_review_extra_prompt:
+            p.add_argument(
+                "--review-extra-prompt",
+                default="",
+                help="Extra instruction text used as review scope instruction (overrides default when set)",
+            )
         p.add_argument("--project-root", default=".", help="Target project root directory")
         p.add_argument("--state-dir", default=".codex-loop-state", help="State directory")
         p.add_argument("--max-iterations", type=int, default=20, help="Maximum iterations")
@@ -40,8 +50,8 @@ def parse_args() -> argparse.Namespace:
         )
 
     add_common(sub.add_parser("implement-loop"), need_spec=True)
-    add_common(sub.add_parser("review-loop"))
-    add_common(sub.add_parser("all"), need_spec=True)
+    add_common(sub.add_parser("review-loop"), need_review_extra_prompt=True)
+    add_common(sub.add_parser("all"), need_spec=True, need_review_extra_prompt=True)
     return parser.parse_args()
 
 
@@ -191,9 +201,11 @@ def review_loop(
     task_log_dir: Path,
     prompt_dir: Path,
     max_iterations: int,
+    review_extra_prompt: str,
 ) -> None:
     review_tpl = load_template(prompt_dir, "review.prompt.md")
     fix_tpl = load_template(prompt_dir, "fix.prompt.md")
+    review_scope_instruction = review_extra_prompt.strip() or "请查看项目工作树中的所有代码变更。"
 
     issues_file = state_dir / "issues.txt"
     write_text(issues_file, "")
@@ -201,7 +213,9 @@ def review_loop(
     for i in range(1, max_iterations + 1):
         print(f"[review-loop] iteration {i}", flush=True)
 
-        review_prompt = review_tpl.safe_substitute()
+        review_prompt = review_tpl.safe_substitute(
+            review_scope_instruction=review_scope_instruction
+        )
         render_to_state(state_dir, "review_prompt.txt", review_prompt)
         review_out = state_dir / f"review_{i}.out"
         run_codex(project_root, review_prompt, review_out, task_log_dir, "review", i)
@@ -248,7 +262,14 @@ def main() -> int:
                 args.implement_extra_prompt,
             )
         elif args.mode == "review-loop":
-            review_loop(project_root, state_dir, task_log_dir, prompt_dir, args.max_iterations)
+            review_loop(
+                project_root,
+                state_dir,
+                task_log_dir,
+                prompt_dir,
+                args.max_iterations,
+                args.review_extra_prompt,
+            )
         elif args.mode == "all":
             spec_path = resolve_path(args.spec, project_root)
             implement_loop(
@@ -260,7 +281,14 @@ def main() -> int:
                 args.max_iterations,
                 args.implement_extra_prompt,
             )
-            review_loop(project_root, state_dir, task_log_dir, prompt_dir, args.max_iterations)
+            review_loop(
+                project_root,
+                state_dir,
+                task_log_dir,
+                prompt_dir,
+                args.max_iterations,
+                args.review_extra_prompt,
+            )
         else:
             raise ValueError(f"Unknown mode: {args.mode}")
     except Exception as exc:

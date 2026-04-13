@@ -63,8 +63,13 @@ python3 scripts/codex_automation_loops.py implement-loop --project-root /path/to
 # review/fix 闭环
 python3 scripts/codex_automation_loops.py review-loop --project-root /path/to/target
 
+# review/fix 闭环（仅 review 阶段注入额外提示词）
+python3 scripts/codex_automation_loops.py review-loop --project-root /path/to/target \
+  --review-extra-prompt "根据 docs/repo/engineering/coding-evaluation-protocol.md review scripts/docs_guard"
+
 # 顺序执行两套闭环
-python3 scripts/codex_automation_loops.py all --project-root /path/to/target --spec docs/xxx.md
+python3 scripts/codex_automation_loops.py all --project-root /path/to/target --spec docs/xxx.md \
+  --review-extra-prompt "根据 docs/repo/engineering/coding-evaluation-protocol.md review scripts/docs_guard"
 ```
 
 可选参数：
@@ -74,6 +79,7 @@ python3 scripts/codex_automation_loops.py all --project-root /path/to/target --s
 - `--max-iterations`（默认 `20`）
 - `--prompt-dir`（默认脚本内置 `prompts/` 绝对路径；也可传相对 `project-root` 的路径）
 - `--implement-extra-prompt`（仅 `implement-loop` / `all`；注入到 `implement_initial.prompt.md` 的 `${implement_extra_prompt}`）
+- `--review-extra-prompt`（仅 `review-loop` / `all`；注入到 `review.prompt.md` 的 `${review_scope_instruction}`。传入后会覆盖默认“请查看项目工作树中的所有代码变更。”）
 - `--spec`（仅 `implement-loop` / `all`；支持文件或目录，不做类型校验）
 
 ## 固定执行命令
