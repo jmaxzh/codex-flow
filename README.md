@@ -14,14 +14,19 @@
 python3 scripts/codex_automation_loops.py --preset implement_loop
 ```
 
+新增重构循环预设：
+
+```bash
+python3 scripts/codex_automation_loops.py --preset refactor_loop
+```
+
 带上下文注入覆盖示例（可重复 `--context`）：
 
 ```bash
 python3 scripts/codex_automation_loops.py \
   --preset implement_loop \
   --context spec docs/new-spec.md \
-  --context user_instruction "请先完成 API 层" \
-  --context coding_rules "输出必须是 JSON object，且必须包含 pass:boolean。"
+  --context user_instruction "请先完成 API 层"
 ```
 
 运行前请确保：
@@ -70,7 +75,7 @@ workflow:
       prompt: |
         首轮指令: {{inputs.user_instruction}}
         规格: {{inputs.spec}}
-        输出 JSON object，必须包含 pass:boolean
+        最后一行输出严格 JSON object，必须包含 pass:boolean
       input_map:
         user_instruction: context.defaults.user_instruction
         spec: context.defaults.spec
@@ -83,7 +88,7 @@ workflow:
     - id: check
       prompt: |
         实现输出: {{inputs.latest_impl}}
-        输出 JSON object，必须包含 pass:boolean
+        最后一行输出严格 JSON object，必须包含 pass:boolean
       input_map:
         latest_impl: context.runtime.latest_impl
       on_success: END
@@ -95,14 +100,15 @@ workflow:
 
 `context.defaults` 是预设中的默认输入。运行时若传入 `--context key value`，会覆盖同名默认值；未注入的 key 继续使用预设默认值。
 
-## 固定输出契约
+## 固定输出潜规则
 
 每个节点的模型输出必须满足：
 
-1. 可解析为 JSON
-2. 顶层为 JSON object
-3. 必含 `pass` 字段
-4. `pass` 必须是 boolean
+1. 只解析输出的最后一个非空行（即最后一行有效内容）
+2. 该行必须是可解析的严格 JSON
+3. 顶层必须是 JSON object
+4. 必含 `pass` 字段
+5. `pass` 必须是 boolean
 
 ## 路由规则
 
@@ -147,4 +153,7 @@ route_bindings:
 
 ## 示例配置
 
-仓库根目录提供了一个可直接改造的示例：[presets/implement_loop.yaml](./presets/implement_loop.yaml)。
+仓库根目录提供了可直接改造的示例：
+
+- [presets/implement_loop.yaml](./presets/implement_loop.yaml)
+- [presets/refactor_loop.yaml](./presets/refactor_loop.yaml)

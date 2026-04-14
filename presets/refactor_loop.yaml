@@ -1,0 +1,62 @@
+version: 1
+
+run:
+  project_root: .
+  state_dir: .codex-loop-state
+  max_steps: 50
+
+executor:
+  cmd: ["codex", "exec", "--skip-git-repo-check"]
+
+context:
+  defaults:
+    refactor_target: "docs/refactor-target.md"
+    user_instruction: "请按目标进行重构，优先提升可读性与可维护性。"
+
+workflow:
+  start: review
+  nodes:
+    - id: review
+      prompt: |
+        你是代码评审工程师，先评估当前实现与重构目标的差距。
+        用户指令: {{inputs.user_instruction}}
+        重构目标: {{inputs.refactor_target}}
+        最后一行输出严格 JSON object（不要使用代码块），至少包含：
+        {
+          "pass": true/false,
+          "verification": "...",
+          "todo": ["..."]
+        }
+      input_map:
+        user_instruction: context.defaults.user_instruction
+        refactor_target: context.defaults.refactor_target
+      on_success: END
+      on_failure: refactor
+      route_bindings:
+        failure:
+          context.runtime.latest_review: outputs.review
+
+    - id: refactor
+      prompt: |
+        你是重构工程师，执行一次重构迭代。
+        用户指令: {{inputs.user_instruction}}
+        重构目标: {{inputs.refactor_target}}
+        评审待办: {{inputs.latest_review}}
+        在不改变对外行为的前提下进行重构；若存在风险请明确列出。
+        请根据评审待办完成重构。
+        最后一行输出严格 JSON object（不要使用代码块），至少包含：
+        {
+          "pass": true/false,
+          "change_summary": "...",
+          "addressed_todo": ["..."],
+          "risk_notes": ["..."]
+        }
+      input_map:
+        user_instruction: context.defaults.user_instruction
+        refactor_target: context.defaults.refactor_target
+        latest_review: context.runtime.latest_review
+      on_success: review
+      on_failure: END
+      route_bindings:
+        success:
+          context.runtime.latest_refactor: outputs.refactor

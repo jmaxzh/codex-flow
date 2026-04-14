@@ -130,6 +130,17 @@ class ConfigValidationTests(PatchedYamlMixin, unittest.TestCase):
 
 
 class OutputContractTests(unittest.TestCase):
+    def test_parse_and_validate_uses_last_non_empty_line(self):
+        payload, pass_flag = module.parse_and_validate_output(
+            "本轮实现已完成。\n{\"pass\": true, \"change_summary\": \"ok\"}\n"
+        )
+        self.assertTrue(pass_flag)
+        self.assertEqual(payload["change_summary"], "ok")
+
+    def test_parse_and_validate_fails_when_last_non_empty_line_not_json(self):
+        with self.assertRaisesRegex(RuntimeError, "Invalid JSON on last line"):
+            module.parse_and_validate_output("{\"pass\": true}\nDONE")
+
     def test_parse_and_validate_requires_pass_field(self):
         with self.assertRaisesRegex(RuntimeError, "must contain 'pass'"):
             module.parse_and_validate_output('{"result":"ok"}')

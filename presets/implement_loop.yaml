@@ -12,8 +12,6 @@ context:
   defaults:
     spec: "docs/prefect-codex-implement-loop-plan.md"
     user_instruction: "请按规格完成首轮实现。"
-    coding_rules: |
-      输出必须是 JSON object，且必须包含 pass:boolean。
 
 workflow:
   start: implement_first
@@ -23,8 +21,7 @@ workflow:
         你是实施工程师，执行首轮实现。
         用户首轮指令: {{inputs.user_instruction}}
         输入规格: {{inputs.spec}}
-        规则: {{inputs.coding_rules}}
-        输出 JSON object，至少包含：
+        最后一行输出严格 JSON object（不要使用代码块），至少包含：
         {
           "pass": true/false,
           "change_summary": "..."
@@ -32,7 +29,6 @@ workflow:
       input_map:
         user_instruction: context.defaults.user_instruction
         spec: context.defaults.spec
-        coding_rules: context.defaults.coding_rules
       on_success: check
       on_failure: END
       route_bindings:
@@ -46,7 +42,7 @@ workflow:
         实现输出: {{inputs.latest_impl}}
         若全部完成，pass=true 且 todo 为空数组。
         若未完成，pass=false 且 todo 给出剩余待办（字符串数组）。
-        输出 JSON object，至少包含：
+        最后一行输出严格 JSON object（不要使用代码块），至少包含：
         {
           "pass": true/false,
           "verification": "...",
@@ -66,9 +62,8 @@ workflow:
         你是实施工程师，执行后续修复轮次。
         输入规格: {{inputs.spec}}
         检查待办: {{inputs.latest_check}}
-        规则: {{inputs.coding_rules}}
         请根据待办修复问题并更新实现。
-        输出 JSON object，至少包含：
+        最后一行输出严格 JSON object（不要使用代码块），至少包含：
         {
           "pass": true/false,
           "change_summary": "...",
@@ -77,7 +72,6 @@ workflow:
       input_map:
         spec: context.defaults.spec
         latest_check: context.runtime.latest_check
-        coding_rules: context.defaults.coding_rules
       on_success: check
       on_failure: END
       route_bindings:

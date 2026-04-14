@@ -369,18 +369,23 @@ def run_codex_exec(
 
 @task
 def parse_and_validate_output(raw_output: str) -> tuple[dict[str, Any], bool]:
+    stripped_output = raw_output.rstrip()
+    if not stripped_output:
+        raise RuntimeError("Output must end with a non-empty line containing JSON")
+
+    last_line = stripped_output.splitlines()[-1].strip()
     try:
-        payload = json.loads(raw_output)
+        payload = json.loads(last_line)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid JSON output: {exc}") from exc
+        raise RuntimeError(f"Invalid JSON on last line: {exc}") from exc
 
     if not isinstance(payload, dict):
-        raise RuntimeError("Output JSON must be an object")
+        raise RuntimeError("Last-line JSON must be an object")
     if "pass" not in payload:
-        raise RuntimeError("Output JSON must contain 'pass' field")
+        raise RuntimeError("Last-line JSON must contain 'pass' field")
     pass_flag = payload["pass"]
     if not isinstance(pass_flag, bool):
-        raise RuntimeError("Output JSON field 'pass' must be boolean")
+        raise RuntimeError("Last-line JSON field 'pass' must be boolean")
     return payload, pass_flag
 
 
