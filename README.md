@@ -15,7 +15,12 @@ python3 scripts/codex_automation_loops.py
 
 运行前请确保：
 
-1. 已安装 `prefect` 与 `pyyaml`
+1. 使用当前系统 `python3.13` 安装依赖（不创建虚拟环境）：
+
+   ```bash
+   python3.13 -m pip install --break-system-packages --user -r requirements.txt
+   ```
+
 2. 当前目录存在 `orchestrator.yaml`
 3. `run.project_root` 指向有效项目目录
 
