@@ -38,7 +38,7 @@ else:
     YAML_IMPORT_ERROR = None
 
 
-CONFIG_FILE = "orchestrator.yaml"
+CONFIG_FILE = "presets/orchestrator.yaml"
 DEFAULT_EXECUTOR_CMD = ["codex", "exec", "--skip-git-repo-check"]
 END_NODE = "END"
 PROMPT_VAR_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
@@ -443,7 +443,7 @@ def run_workflow() -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run codex workflow orchestrator from ./orchestrator.yaml"
+        description="Run codex workflow orchestrator from ./presets/orchestrator.yaml"
     )
     return parser.parse_args()
 

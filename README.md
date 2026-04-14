@@ -2,7 +2,7 @@
 
 `scripts/codex_automation_loops.py` 已改为通用编排引擎：
 
-- 启动只读取当前目录 `./orchestrator.yaml`
+- 启动只读取当前目录 `./presets/orchestrator.yaml`
 - 不再接受业务 CLI 参数
 - 不再内置 `implement/review/check/fix` 固定阶段语义
 - 节点路由仅由 `pass` 与 `on_success/on_failure` 决定
@@ -21,7 +21,7 @@ python3 scripts/codex_automation_loops.py
    python3.13 -m pip install --break-system-packages --user -r requirements.txt
    ```
 
-2. 当前目录存在 `orchestrator.yaml`
+2. 当前目录存在 `presets/orchestrator.yaml`
 3. `run.project_root` 指向有效项目目录
 
 ## 配置 DSL
@@ -103,4 +103,4 @@ workflow:
 
 ## 示例配置
 
-仓库根目录提供了一个可直接改造的示例：[orchestrator.yaml](./orchestrator.yaml)。
+仓库根目录提供了一个可直接改造的示例：[presets/orchestrator.yaml](./presets/orchestrator.yaml)。

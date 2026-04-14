@@ -29,6 +29,7 @@ class PatchedYamlMixin:
 class ConfigValidationTests(PatchedYamlMixin, unittest.TestCase):
     def _write_config(self, base_dir: Path, payload: dict):
         config_path = base_dir / module.CONFIG_FILE
+        config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(payload), encoding="utf-8")
         return config_path
 
@@ -161,7 +162,9 @@ class MaxStepsTests(PatchedYamlMixin, unittest.TestCase):
                     ],
                 },
             }
-            (tmp_path / module.CONFIG_FILE).write_text(json.dumps(config), encoding="utf-8")
+            config_path = tmp_path / module.CONFIG_FILE
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(config), encoding="utf-8")
 
             def fake_codex_exec(
                 project_root: str,
