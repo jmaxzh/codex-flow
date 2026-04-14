@@ -38,10 +38,13 @@ else:
     YAML_IMPORT_ERROR = None
 
 
-CONFIG_FILE = "presets/orchestrator.yaml"
+PRESETS_DIR = "presets"
+PRESET_FILE_SUFFIX = ".yaml"
 DEFAULT_EXECUTOR_CMD = ["codex", "exec", "--skip-git-repo-check"]
 END_NODE = "END"
 PROMPT_VAR_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
+ALLOWED_SOURCE_PREFIXES = ("context.defaults.", "context.runtime.", "outputs.")
+ROUTE_BINDING_TARGET_PREFIX = "context.runtime."
 
 
 def resolve_path(path_value: str | Path, base_dir: Path) -> Path:
@@ -72,6 +75,22 @@ def resolve_dotted_path(data: dict[str, Any], dotted_path: str) -> Any:
     return current
 
 
+def set_dotted_path(data: dict[str, Any], dotted_path: str, value: Any) -> None:
+    parts = dotted_path.split(".")
+    if not parts or any(not part for part in parts):
+        raise RuntimeError(f"Invalid dotted path: {dotted_path}")
+
+    current: Any = data
+    for part in parts[:-1]:
+        if part not in current:
+            current[part] = {}
+        elif not isinstance(current[part], dict):
+            raise RuntimeError(f"Path conflict: {dotted_path}")
+        current = current[part]
+
+    current[parts[-1]] = value
+
+
 def make_codex_log_path(task_log_dir: Path, node_id: str, step: int, attempt: int) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
     safe_node = re.sub(r"[^a-zA-Z0-9_-]", "_", node_id)
@@ -96,8 +115,48 @@ def ensure_string_list(value: Any, field_name: str) -> list[str]:
     return value
 
 
+def ensure_flat_context_map(value: Any, field_name: str) -> dict[str, Any]:
+    data = ensure_dict(value, field_name)
+    for key, item in data.items():
+        if not isinstance(key, str) or not key:
+            raise RuntimeError(f"'{field_name}' keys must be non-empty strings")
+        if "." in key:
+            raise RuntimeError(f"'{field_name}' key '{key}' cannot contain '.'")
+        if isinstance(item, (dict, list)):
+            raise RuntimeError(f"'{field_name}.{key}' cannot be object or array")
+    return data
+
+
+def validate_source_path(path_value: str, field_name: str) -> None:
+    if not any(path_value.startswith(prefix) for prefix in ALLOWED_SOURCE_PREFIXES):
+        raise RuntimeError(
+            f"'{field_name}' must start with context.defaults. or context.runtime. or outputs."
+        )
+
+
+def resolve_preset_path(cwd: Path, preset_value: str) -> Path:
+    if "/" in preset_value or "\\" in preset_value:
+        return resolve_path(preset_value, cwd)
+    file_name = preset_value
+    if not file_name.endswith(PRESET_FILE_SUFFIX):
+        file_name = f"{file_name}{PRESET_FILE_SUFFIX}"
+    return resolve_path(Path(PRESETS_DIR) / file_name, cwd)
+
+
+def parse_context_overrides(pairs: list[list[str]] | None) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for raw_key, raw_value in pairs or []:
+        key = raw_key.strip()
+        if not key:
+            raise RuntimeError("context key cannot be empty")
+        if "." in key:
+            raise RuntimeError(f"context key '{key}' cannot contain '.'")
+        overrides[key] = raw_value
+    return overrides
+
+
 @task
-def load_config(config_path: str) -> dict[str, Any]:
+def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str, Any]:
     if YAML_IMPORT_ERROR is not None:
         raise RuntimeError(f"Missing dependency: pyyaml ({YAML_IMPORT_ERROR})")
     raw = yaml.safe_load(read_text(Path(config_path)))
@@ -130,9 +189,8 @@ def load_config(config_path: str) -> dict[str, Any]:
 
     context_cfg_raw = raw.get("context") or {}
     context_cfg = ensure_dict(context_cfg_raw, "context")
-    static_context = context_cfg.get("static", {})
-    if not isinstance(static_context, dict):
-        raise RuntimeError("context.static must be object")
+    defaults_context = ensure_flat_context_map(context_cfg.get("defaults", {}), "context.defaults")
+    merged_defaults_context = {**defaults_context, **context_overrides}
 
     start_node = ensure_string(workflow_cfg.get("start"), "workflow.start")
     nodes_raw = workflow_cfg.get("nodes")
@@ -156,9 +214,48 @@ def load_config(config_path: str) -> dict[str, Any]:
             raise RuntimeError(f"workflow.nodes[{idx}].input_map must be object")
         if not all(isinstance(k, str) and isinstance(v, str) for k, v in input_map.items()):
             raise RuntimeError(f"workflow.nodes[{idx}].input_map must be string->string map")
+        for input_key, source_path in input_map.items():
+            validate_source_path(source_path, f"workflow.nodes[{idx}].input_map.{input_key}")
 
         on_success = ensure_string(node.get("on_success"), f"workflow.nodes[{idx}].on_success")
         on_failure = ensure_string(node.get("on_failure"), f"workflow.nodes[{idx}].on_failure")
+        route_bindings_raw = node.get("route_bindings", {})
+        if not isinstance(route_bindings_raw, dict):
+            raise RuntimeError(f"workflow.nodes[{idx}].route_bindings must be object")
+
+        unknown_routes = set(route_bindings_raw.keys()) - {"success", "failure"}
+        if unknown_routes:
+            bad = ", ".join(sorted(unknown_routes))
+            raise RuntimeError(
+                f"workflow.nodes[{idx}].route_bindings has unsupported keys: {bad} (allowed: success,failure)"
+            )
+
+        route_bindings: dict[str, dict[str, str]] = {}
+        for route_name in ("success", "failure"):
+            route_map_raw = route_bindings_raw.get(route_name, {})
+            if not isinstance(route_map_raw, dict):
+                raise RuntimeError(
+                    f"workflow.nodes[{idx}].route_bindings.{route_name} must be object"
+                )
+            if not all(isinstance(k, str) and isinstance(v, str) for k, v in route_map_raw.items()):
+                raise RuntimeError(
+                    f"workflow.nodes[{idx}].route_bindings.{route_name} must be string->string map"
+                )
+
+            normalized_map: dict[str, str] = {}
+            for target_path, source_path in route_map_raw.items():
+                if not target_path.startswith(ROUTE_BINDING_TARGET_PREFIX):
+                    raise RuntimeError(
+                        f"workflow.nodes[{idx}].route_bindings.{route_name} target '{target_path}' "
+                        f"must start with {ROUTE_BINDING_TARGET_PREFIX}"
+                    )
+                validate_source_path(
+                    source_path,
+                    f"workflow.nodes[{idx}].route_bindings.{route_name}.{target_path}",
+                )
+                normalized_map[target_path] = source_path
+            route_bindings[route_name] = normalized_map
+
         nodes.append(
             {
                 "id": node_id,
@@ -166,6 +263,7 @@ def load_config(config_path: str) -> dict[str, Any]:
                 "input_map": input_map,
                 "on_success": on_success,
                 "on_failure": on_failure,
+                "route_bindings": route_bindings,
             }
         )
 
@@ -188,7 +286,7 @@ def load_config(config_path: str) -> dict[str, Any]:
             "max_steps": max_steps,
         },
         "executor": {"cmd": executor_cmd},
-        "context": {"static": static_context},
+        "context": {"defaults": merged_defaults_context},
         "workflow": {"start": start_node, "nodes": nodes},
     }
 
@@ -197,10 +295,7 @@ def load_config(config_path: str) -> dict[str, Any]:
 def build_prompt_inputs(node: dict[str, Any], runtime_state: dict[str, Any]) -> dict[str, Any]:
     prompt_inputs: dict[str, Any] = {}
     for key, source_path in node["input_map"].items():
-        if not source_path.startswith("context.static.") and not source_path.startswith("outputs."):
-            raise RuntimeError(
-                f"Node '{node['id']}' input_map path '{source_path}' must start with context.static. or outputs."
-            )
+        validate_source_path(source_path, f"node '{node['id']}' input_map path '{source_path}'")
         prompt_inputs[key] = resolve_dotted_path(runtime_state, source_path)
     return prompt_inputs
 
@@ -300,6 +395,18 @@ def resolve_next_node(node: dict[str, Any], pass_flag: bool, existing_node_ids: 
 
 
 @task
+def apply_route_bindings(node: dict[str, Any], pass_flag: bool, runtime_state: dict[str, Any]) -> dict[str, str]:
+    route_name = "success" if pass_flag else "failure"
+    bindings = node.get("route_bindings", {}).get(route_name, {})
+    applied: dict[str, str] = {}
+    for target_path, source_path in bindings.items():
+        value = resolve_dotted_path(runtime_state, source_path)
+        set_dotted_path(runtime_state, target_path, value)
+        applied[target_path] = source_path
+    return applied
+
+
+@task
 def persist_state_and_logs(
     state_dir: str,
     step: int,
@@ -311,6 +418,7 @@ def persist_state_and_logs(
     raw_output_path: str,
     parsed_output: dict[str, Any],
     codex_log_path: str,
+    applied_route_bindings: dict[str, str],
 ) -> dict[str, str]:
     state_root = Path(state_dir)
     safe_node = re.sub(r"[^a-zA-Z0-9_-]", "_", node_id)
@@ -333,6 +441,7 @@ def persist_state_and_logs(
         "raw_output_path": raw_output_path,
         "parsed_output_path": str(parsed_path),
         "codex_log_path": codex_log_path,
+        "applied_route_bindings": applied_route_bindings,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
     write_json(meta_path, meta_payload)
@@ -347,9 +456,8 @@ def persist_state_and_logs(
 
 
 @flow(name="codex_orchestrator")
-def run_workflow() -> dict[str, Any]:
-    config_path = Path.cwd() / CONFIG_FILE
-    config = load_config(str(config_path))
+def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[str, Any]:
+    config = load_config(config_path, context_overrides)
 
     run_cfg = config["run"]
     project_root = Path(run_cfg["project_root"])
@@ -364,7 +472,7 @@ def run_workflow() -> dict[str, Any]:
     node_ids = list(nodes_by_id.keys())
 
     runtime_state: dict[str, Any] = {
-        "context": {"static": config["context"]["static"]},
+        "context": {"defaults": config["context"]["defaults"], "runtime": {}},
         "outputs": {},
     }
     attempt_counter: dict[str, int] = {}
@@ -402,6 +510,7 @@ def run_workflow() -> dict[str, Any]:
         runtime_state["outputs"][current_node_id] = parsed_output
 
         next_node = resolve_next_node(node, pass_flag, node_ids)
+        applied_route_bindings = apply_route_bindings(node, pass_flag, runtime_state)
         persist_state_and_logs(
             str(state_dir),
             step,
@@ -413,6 +522,7 @@ def run_workflow() -> dict[str, Any]:
             str(raw_output_path),
             parsed_output,
             codex_log_path,
+            applied_route_bindings,
         )
 
         write_json(
@@ -421,6 +531,7 @@ def run_workflow() -> dict[str, Any]:
                 "current_node": next_node,
                 "step": step,
                 "max_steps": max_steps,
+                "context": runtime_state["context"],
                 "outputs": runtime_state["outputs"],
                 "attempt_counter": attempt_counter,
             },
@@ -442,14 +553,24 @@ def run_workflow() -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run codex workflow orchestrator from ./presets/orchestrator.yaml"
+    parser = argparse.ArgumentParser(description="Run codex workflow orchestrator from preset config")
+    parser.add_argument(
+        "--preset",
+        required=True,
+        help="Preset name in ./presets (without .yaml) or an explicit preset path",
+    )
+    parser.add_argument(
+        "--context",
+        action="append",
+        nargs=2,
+        metavar=("KEY", "VALUE"),
+        help="Override context.defaults key/value. Repeatable. KEY cannot contain '.'",
     )
     return parser.parse_args()
 
 
 def main() -> int:
-    parse_args()  # Keep CLI minimal: no business arguments.
+    args = parse_args()
 
     if PREFECT_IMPORT_ERROR is not None:
         print(f"Missing dependency: prefect ({PREFECT_IMPORT_ERROR})", file=sys.stderr)
@@ -458,13 +579,19 @@ def main() -> int:
         print(f"Missing dependency: pyyaml ({YAML_IMPORT_ERROR})", file=sys.stderr)
         return 2
 
-    config_path = Path.cwd() / CONFIG_FILE
+    try:
+        context_overrides = parse_context_overrides(args.context)
+        config_path = resolve_preset_path(Path.cwd(), args.preset)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     if not config_path.is_file():
         print(f"Config file not found: {config_path}", file=sys.stderr)
         return 2
 
     try:
-        run_workflow()
+        run_workflow(str(config_path), context_overrides)
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 2

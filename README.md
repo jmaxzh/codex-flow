@@ -1,16 +1,27 @@
 # Codex 配置驱动工作流编排（Prefect）
 
-`scripts/codex_automation_loops.py` 已改为通用编排引擎：
+`scripts/codex_automation_loops.py` 是通用编排引擎：
 
-- 启动只读取当前目录 `./presets/orchestrator.yaml`
-- 不再接受业务 CLI 参数
+- 启动时通过 `--preset` 选择预设模板（必选）
+- 支持通过命令行注入并覆盖预设中的上下文默认值
 - 不再内置 `implement/review/check/fix` 固定阶段语义
 - 节点路由仅由 `pass` 与 `on_success/on_failure` 决定
+- 节点只写入 `outputs.<node_id>`；边上的 `route_bindings` 负责把结果绑定到运行时上下文供下游读取
 
 ## 运行方式
 
 ```bash
-python3 scripts/codex_automation_loops.py
+python3 scripts/codex_automation_loops.py --preset implement_loop
+```
+
+带上下文注入覆盖示例（可重复 `--context`）：
+
+```bash
+python3 scripts/codex_automation_loops.py \
+  --preset implement_loop \
+  --context spec docs/new-spec.md \
+  --context user_instruction "请先完成 API 层" \
+  --context coding_rules "输出必须是 JSON object，且必须包含 pass:boolean。"
 ```
 
 运行前请确保：
@@ -21,8 +32,18 @@ python3 scripts/codex_automation_loops.py
    python3.13 -m pip install --break-system-packages --user -r requirements.txt
    ```
 
-2. 当前目录存在 `presets/orchestrator.yaml`
+2. 预设文件存在于 `presets/` 下，或 `--preset` 指向有效文件路径
 3. `run.project_root` 指向有效项目目录
+
+## CLI 参数
+
+- `--preset <name-or-path>`（必选）
+  - 不包含路径分隔符时，解析为 `./presets/<name>.yaml`
+  - 包含路径分隔符时，按给定路径解析（相对当前目录或绝对路径）
+- `--context <key> <value>`（可选，可重复）
+  - 仅支持扁平键值注入
+  - `key` 不允许包含 `.`，不允许嵌套对象
+  - 同 key 出现多次时，后者覆盖前者
 
 ## 配置 DSL
 
@@ -38,30 +59,41 @@ executor:
   cmd: ["codex", "exec", "--skip-git-repo-check"]
 
 context:
-  static:
+  defaults:
     spec: "docs/xxx.md"
+    user_instruction: "根据 spec 进行首轮实现"
 
 workflow:
-  start: plan
+  start: implement_first
   nodes:
-    - id: plan
+    - id: implement_first
       prompt: |
-        输入: {{inputs.spec}}
+        首轮指令: {{inputs.user_instruction}}
+        规格: {{inputs.spec}}
         输出 JSON object，必须包含 pass:boolean
       input_map:
-        spec: context.static.spec
-      on_success: implement
+        user_instruction: context.defaults.user_instruction
+        spec: context.defaults.spec
+      on_success: check
       on_failure: END
+      route_bindings:
+        success:
+          context.runtime.latest_impl: outputs.implement_first
 
-    - id: implement
+    - id: check
       prompt: |
-        规划输出: {{inputs.plan_output}}
+        实现输出: {{inputs.latest_impl}}
         输出 JSON object，必须包含 pass:boolean
       input_map:
-        plan_output: outputs.plan
+        latest_impl: context.runtime.latest_impl
       on_success: END
-      on_failure: END
+      on_failure: implement_loop
+      route_bindings:
+        failure:
+          context.runtime.latest_check: outputs.check
 ```
+
+`context.defaults` 是预设中的默认输入。运行时若传入 `--context key value`，会覆盖同名默认值；未注入的 key 继续使用预设默认值。
 
 ## 固定输出契约
 
@@ -79,14 +111,26 @@ workflow:
 - `END` -> 结束流程
 - 示例默认采用显式 fail-fast：失败分支直接路由到 `END`
 
+可选 `route_bindings` 在边上执行，用于把来源值写入 `context.runtime.*`：
+
+```yaml
+route_bindings:
+  success:
+    context.runtime.latest_impl: outputs.implement_first
+  failure:
+    context.runtime.latest_check: outputs.check
+```
+
 ## 输入映射规则
 
 `input_map` 只允许引用：
 
-- `context.static.*`
+- `context.defaults.*`
+- `context.runtime.*`
 - `outputs.*`
 
 `outputs.<node_id>` 始终是该节点完整 JSON 输出（原样透传）。
+`context.runtime.*` 由编排层通过 `route_bindings` 更新，不改变节点输出归属。
 
 ## 状态与日志
 
@@ -96,11 +140,11 @@ workflow:
 - `stepXXX__<node>__attemptYY__raw.txt`：节点原始输出
 - `stepXXX__<node>__attemptYY__prompt.txt`：渲染后提示词
 - `stepXXX__<node>__attemptYY__parsed.json`：解析后 JSON
-- `stepXXX__<node>__attemptYY__meta.json`：step 元信息（step/node_id/attempt/next_node 等）
+- `stepXXX__<node>__attemptYY__meta.json`：step 元信息（step/node_id/attempt/next_node/applied_route_bindings 等）
 - `history.jsonl`：逐步执行历史
-- `runtime_state.json`：最近状态快照
+- `runtime_state.json`：最近状态快照（包含 `context.defaults`/`context.runtime`、`outputs`、`attempt_counter`）
 - `run_summary.json`：最终汇总
 
 ## 示例配置
 
-仓库根目录提供了一个可直接改造的示例：[presets/orchestrator.yaml](./presets/orchestrator.yaml)。
+仓库根目录提供了一个可直接改造的示例：[presets/implement_loop.yaml](./presets/implement_loop.yaml)。
