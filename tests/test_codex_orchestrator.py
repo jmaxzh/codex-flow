@@ -28,6 +28,53 @@ class PatchedYamlMixin:
         )
 
 
+class WorkflowTestFactoryMixin:
+    def write_workflow_config(
+        self,
+        base_dir: Path,
+        *,
+        project_root: Path,
+        max_steps: int,
+        defaults: dict[str, object],
+        start: str,
+        nodes: list[dict[str, object]],
+    ) -> Path:
+        payload = {
+            "version": 1,
+            "run": {
+                "project_root": str(project_root),
+                "state_dir": ".codex-loop-state",
+                "max_steps": max_steps,
+            },
+            "executor": {"cmd": ["codex", "exec", "--skip-git-repo-check"]},
+            "context": {"defaults": defaults},
+            "workflow": {"start": start, "nodes": nodes},
+        }
+        config_path = base_dir / TEST_CONFIG_RELATIVE_PATH
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+        return config_path
+
+    def make_fake_codex_exec(self, payload_for_call):
+        def fake_codex_exec(
+            project_root: str,
+            executor_cmd: list[str],
+            prompt: str,
+            out_file: str,
+            task_log_dir: str,
+            node_id: str,
+            step: int,
+            attempt: int,
+        ) -> str:
+            payload = payload_for_call(node_id=node_id, step=step, attempt=attempt, prompt=prompt)
+            Path(out_file).write_text(json.dumps(payload), encoding="utf-8")
+            log_path = Path(task_log_dir) / f"fake_{step}_{attempt}.log"
+            log_path.write_text("ok", encoding="utf-8")
+            return str(log_path)
+
+        return fake_codex_exec
+
+
 class ConfigValidationTests(PatchedYamlMixin, unittest.TestCase):
     def _write_config(self, base_dir: Path, payload: dict) -> Path:
         config_path = base_dir / TEST_CONFIG_RELATIVE_PATH
@@ -159,6 +206,25 @@ class ConfigValidationTests(PatchedYamlMixin, unittest.TestCase):
             with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "collect_history_to must start"):
                 module.load_config(str(config_path), {})
 
+    def test_load_config_compiles_input_and_route_binding_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            payload = self._minimal_valid_config(project_root=tmp)
+            payload["workflow"]["nodes"][0]["route_bindings"] = {
+                "success": {"context.runtime.latest_impl": "outputs.n1"}
+            }
+            config_path = self._write_config(tmp_path, payload)
+
+            with self.patch_yaml():
+                config = module.load_config(str(config_path), {})
+
+            node = config["workflow"]["nodes"][0]
+            self.assertEqual(node["input_map_parts"]["spec"], ("context", "defaults", "spec"))
+            self.assertEqual(
+                node["route_bindings_parts"]["success"][0]["source_parts"],
+                ("outputs", "n1"),
+            )
+
 
 class OutputContractTests(unittest.TestCase):
     def test_parse_and_validate_uses_last_non_empty_line(self):
@@ -238,6 +304,33 @@ class DataPassthroughTests(unittest.TestCase):
 
         prompt_inputs = module.build_prompt_inputs(node, runtime_state)
         self.assertEqual(prompt_inputs["latest_impl"], runtime_state["context"]["runtime"]["latest_impl"])
+
+    def test_build_prompt_inputs_reads_compiled_paths_without_revalidating_runtime(self):
+        node = {
+            "id": "implement",
+            "input_map": {"plan_output": "invalid.source.path"},
+            "input_map_parts": {"plan_output": ("outputs", "plan")},
+        }
+        runtime_state = {
+            "context": {"defaults": {}, "runtime": {}},
+            "outputs": {"plan": {"pass": True, "plan_summary": "summary"}},
+        }
+
+        prompt_inputs = module.build_prompt_inputs(node, runtime_state)
+        self.assertEqual(prompt_inputs["plan_output"], runtime_state["outputs"]["plan"])
+
+
+class HistoryTargetTests(unittest.TestCase):
+    def test_ensure_history_list_creates_missing_path_and_returns_list(self):
+        runtime_state = {"context": {"defaults": {}, "runtime": {}}, "outputs": {}}
+        history = module.ensure_history_list(runtime_state, "context.runtime.review_history")
+        self.assertEqual(history, [])
+        self.assertIs(history, runtime_state["context"]["runtime"]["review_history"])
+
+    def test_ensure_history_list_rejects_non_list_target(self):
+        runtime_state = {"context": {"defaults": {}, "runtime": {"review_history": {}}}, "outputs": {}}
+        with self.assertRaisesRegex(RuntimeError, "History target must be array"):
+            module.ensure_history_list(runtime_state, "context.runtime.review_history")
 
 
 class PromptRenderingTests(PatchedYamlMixin, unittest.TestCase):
@@ -533,75 +626,51 @@ class PromptPathResolutionWorkflowTests(PatchedYamlMixin, unittest.TestCase):
             self.assertIn("CFG_DIR_CONTENT", prompts[0])
 
 
-class RouteBindingRuntimeTests(PatchedYamlMixin, unittest.TestCase):
+class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest.TestCase):
     def test_run_workflow_applies_route_bindings_and_keeps_outputs_by_node_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            config = {
-                "version": 1,
-                "run": {
-                    "project_root": str(tmp_path),
-                    "state_dir": ".codex-loop-state",
-                    "max_steps": 6,
-                },
-                "executor": {"cmd": ["codex", "exec", "--skip-git-repo-check"]},
-                "context": {"defaults": {"user_instruction": "first pass", "spec": "s"}},
-                "workflow": {
-                    "start": "implement_first",
-                    "nodes": [
-                        {
-                            "id": "implement_first",
-                            "prompt": "implement_first",
-                            "input_map": {"instruction": "context.defaults.user_instruction"},
-                            "on_success": "check",
-                            "on_failure": "END",
-                            "route_bindings": {
-                                "success": {
-                                    "context.runtime.latest_impl": "outputs.implement_first"
-                                }
-                            },
+            config_path = self.write_workflow_config(
+                tmp_path,
+                project_root=tmp_path,
+                max_steps=6,
+                defaults={"user_instruction": "first pass", "spec": "s"},
+                start="implement_first",
+                nodes=[
+                    {
+                        "id": "implement_first",
+                        "prompt": "implement_first",
+                        "input_map": {"instruction": "context.defaults.user_instruction"},
+                        "on_success": "check",
+                        "on_failure": "END",
+                        "route_bindings": {
+                            "success": {"context.runtime.latest_impl": "outputs.implement_first"}
                         },
-                        {
-                            "id": "check",
-                            "prompt": "check",
-                            "input_map": {"latest_impl": "context.runtime.latest_impl"},
-                            "on_success": "END",
-                            "on_failure": "implement_loop",
-                            "route_bindings": {
-                                "failure": {
-                                    "context.runtime.latest_check": "outputs.check"
-                                }
-                            },
+                    },
+                    {
+                        "id": "check",
+                        "prompt": "check",
+                        "input_map": {"latest_impl": "context.runtime.latest_impl"},
+                        "on_success": "END",
+                        "on_failure": "implement_loop",
+                        "route_bindings": {
+                            "failure": {"context.runtime.latest_check": "outputs.check"}
                         },
-                        {
-                            "id": "implement_loop",
-                            "prompt": "implement_loop",
-                            "input_map": {"latest_check": "context.runtime.latest_check"},
-                            "on_success": "check",
-                            "on_failure": "END",
-                            "route_bindings": {
-                                "success": {
-                                    "context.runtime.latest_impl": "outputs.implement_loop"
-                                }
-                            },
+                    },
+                    {
+                        "id": "implement_loop",
+                        "prompt": "implement_loop",
+                        "input_map": {"latest_check": "context.runtime.latest_check"},
+                        "on_success": "check",
+                        "on_failure": "END",
+                        "route_bindings": {
+                            "success": {"context.runtime.latest_impl": "outputs.implement_loop"}
                         },
-                    ],
-                },
-            }
-            config_path = tmp_path / TEST_CONFIG_RELATIVE_PATH
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(json.dumps(config), encoding="utf-8")
+                    },
+                ],
+            )
 
-            def fake_codex_exec(
-                project_root: str,
-                executor_cmd: list[str],
-                prompt: str,
-                out_file: str,
-                task_log_dir: str,
-                node_id: str,
-                step: int,
-                attempt: int,
-            ) -> str:
+            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
                 if node_id == "implement_first":
                     payload = {"pass": True, "node": node_id, "step": step}
                 elif node_id == "check" and attempt == 1:
@@ -612,14 +681,11 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, unittest.TestCase):
                     payload = {"pass": True, "node": node_id, "todo": []}
                 else:  # pragma: no cover - defensive branch
                     raise AssertionError(f"unexpected node/attempt: {node_id}/{attempt}")
-                Path(out_file).write_text(json.dumps(payload), encoding="utf-8")
-                log_path = Path(task_log_dir) / f"fake_{step}_{attempt}.log"
-                log_path.write_text("ok", encoding="utf-8")
-                return str(log_path)
+                return payload
 
             with (
                 self.patch_yaml(),
-                patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+                patch.object(module, "run_codex_exec", side_effect=self.make_fake_codex_exec(payload_for_call)),
             ):
                 summary = module.run_workflow(str(config_path), {})
 
@@ -642,57 +708,35 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, unittest.TestCase):
     def test_run_workflow_collects_output_history_for_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            config = {
-                "version": 1,
-                "run": {
-                    "project_root": str(tmp_path),
-                    "state_dir": ".codex-loop-state",
-                    "max_steps": 3,
-                },
-                "executor": {"cmd": ["codex", "exec", "--skip-git-repo-check"]},
-                "context": {"defaults": {}},
-                "workflow": {
-                    "start": "review",
-                    "nodes": [
-                        {
-                            "id": "review",
-                            "prompt": "review",
-                            "input_map": {},
-                            "collect_history_to": "context.runtime.review_history",
-                            "on_success": "END",
-                            "on_failure": "review",
-                        }
-                    ],
-                },
-            }
-            config_path = tmp_path / TEST_CONFIG_RELATIVE_PATH
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(json.dumps(config), encoding="utf-8")
+            config_path = self.write_workflow_config(
+                tmp_path,
+                project_root=tmp_path,
+                max_steps=3,
+                defaults={},
+                start="review",
+                nodes=[
+                    {
+                        "id": "review",
+                        "prompt": "review",
+                        "input_map": {},
+                        "collect_history_to": "context.runtime.review_history",
+                        "on_success": "END",
+                        "on_failure": "review",
+                    }
+                ],
+            )
 
-            def fake_codex_exec(
-                project_root: str,
-                executor_cmd: list[str],
-                prompt: str,
-                out_file: str,
-                task_log_dir: str,
-                node_id: str,
-                step: int,
-                attempt: int,
-            ) -> str:
+            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
                 payloads = [
                     {"pass": False, "issues": ["a"]},
                     {"pass": False, "issues": ["a", "b"]},
                     {"pass": True, "issues": []},
                 ]
-                payload = payloads[attempt - 1]
-                Path(out_file).write_text(json.dumps(payload), encoding="utf-8")
-                log_path = Path(task_log_dir) / f"fake_{step}_{attempt}.log"
-                log_path.write_text("ok", encoding="utf-8")
-                return str(log_path)
+                return payloads[attempt - 1]
 
             with (
                 self.patch_yaml(),
-                patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+                patch.object(module, "run_codex_exec", side_effect=self.make_fake_codex_exec(payload_for_call)),
             ):
                 summary = module.run_workflow(str(config_path), {})
 
@@ -712,53 +756,32 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, unittest.TestCase):
     def test_run_workflow_initializes_history_before_first_prompt_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            config = {
-                "version": 1,
-                "run": {
-                    "project_root": str(tmp_path),
-                    "state_dir": ".codex-loop-state",
-                    "max_steps": 1,
-                },
-                "executor": {"cmd": ["codex", "exec", "--skip-git-repo-check"]},
-                "context": {"defaults": {}},
-                "workflow": {
-                    "start": "review",
-                    "nodes": [
-                        {
-                            "id": "review",
-                            "prompt": "review",
-                            "input_map": {"history": "context.runtime.review_history"},
-                            "collect_history_to": "context.runtime.review_history",
-                            "on_success": "END",
-                            "on_failure": "END",
-                        }
-                    ],
-                },
-            }
-            config_path = tmp_path / TEST_CONFIG_RELATIVE_PATH
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(json.dumps(config), encoding="utf-8")
+            config_path = self.write_workflow_config(
+                tmp_path,
+                project_root=tmp_path,
+                max_steps=1,
+                defaults={},
+                start="review",
+                nodes=[
+                    {
+                        "id": "review",
+                        "prompt": "review",
+                        "input_map": {"history": "context.runtime.review_history"},
+                        "collect_history_to": "context.runtime.review_history",
+                        "on_success": "END",
+                        "on_failure": "END",
+                    }
+                ],
+            )
             captured_prompts: list[str] = []
 
-            def fake_codex_exec(
-                project_root: str,
-                executor_cmd: list[str],
-                prompt: str,
-                out_file: str,
-                task_log_dir: str,
-                node_id: str,
-                step: int,
-                attempt: int,
-            ) -> str:
+            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
                 captured_prompts.append(prompt)
-                Path(out_file).write_text('{"pass": true, "issues": []}', encoding="utf-8")
-                log_path = Path(task_log_dir) / f"fake_{step}_{attempt}.log"
-                log_path.write_text("ok", encoding="utf-8")
-                return str(log_path)
+                return {"pass": True, "issues": []}
 
             with (
                 self.patch_yaml(),
-                patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+                patch.object(module, "run_codex_exec", side_effect=self.make_fake_codex_exec(payload_for_call)),
             ):
                 summary = module.run_workflow(str(config_path), {})
 

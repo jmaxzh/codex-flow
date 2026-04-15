@@ -76,28 +76,11 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def resolve_dotted_path(data: dict[str, Any], dotted_path: str) -> Any:
-    current: Any = data
-    for part in dotted_path.split("."):
-        if not isinstance(current, dict) or part not in current:
-            raise RuntimeError(f"Path not found: {dotted_path}")
-        current = current[part]
-    return current
+    return resolve_dotted_parts(data, parse_dotted_path(dotted_path, dotted_path), dotted_path)
 
 
 def set_dotted_path(data: dict[str, Any], dotted_path: str, value: Any) -> None:
-    parts = dotted_path.split(".")
-    if not parts or any(not part for part in parts):
-        raise RuntimeError(f"Invalid dotted path: {dotted_path}")
-
-    current: Any = data
-    for part in parts[:-1]:
-        if part not in current:
-            current[part] = {}
-        elif not isinstance(current[part], dict):
-            raise RuntimeError(f"Path conflict: {dotted_path}")
-        current = current[part]
-
-    current[parts[-1]] = value
+    set_dotted_parts(data, parse_dotted_path(dotted_path, dotted_path), dotted_path, value)
 
 
 def make_codex_log_path(task_log_dir: Path, node_id: str, step: int, attempt: int) -> Path:
@@ -141,6 +124,37 @@ def validate_source_path(path_value: str, field_name: str) -> None:
         raise RuntimeError(
             f"'{field_name}' must start with context.defaults. or context.runtime. or outputs."
         )
+
+
+def parse_dotted_path(path_value: str, field_name: str) -> tuple[str, ...]:
+    parts = tuple(path_value.split("."))
+    if not parts or any(not part for part in parts):
+        raise RuntimeError(f"Invalid dotted path: {path_value} ({field_name})")
+    return parts
+
+
+def resolve_dotted_parts(data: dict[str, Any], path_parts: tuple[str, ...], dotted_path: str) -> Any:
+    current: Any = data
+    for part in path_parts:
+        if not isinstance(current, dict) or part not in current:
+            raise RuntimeError(f"Path not found: {dotted_path}")
+        current = current[part]
+    return current
+
+
+def set_dotted_parts(data: dict[str, Any], path_parts: tuple[str, ...], dotted_path: str, value: Any) -> None:
+    if not path_parts:
+        raise RuntimeError(f"Invalid dotted path: {dotted_path}")
+
+    current: Any = data
+    for part in path_parts[:-1]:
+        if part not in current:
+            current[part] = {}
+        elif not isinstance(current[part], dict):
+            raise RuntimeError(f"Path conflict: {dotted_path}")
+        current = current[part]
+
+    current[path_parts[-1]] = value
 
 
 def resolve_preset_path(cwd: Path, preset_value: str) -> Path:
@@ -223,13 +237,18 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
             raise RuntimeError(f"workflow.nodes[{idx}].input_map must be object")
         if not all(isinstance(k, str) and isinstance(v, str) for k, v in input_map.items()):
             raise RuntimeError(f"workflow.nodes[{idx}].input_map must be string->string map")
+        input_map_parts: dict[str, tuple[str, ...]] = {}
         for input_key, source_path in input_map.items():
             validate_source_path(source_path, f"workflow.nodes[{idx}].input_map.{input_key}")
+            input_map_parts[input_key] = parse_dotted_path(
+                source_path, f"workflow.nodes[{idx}].input_map.{input_key}"
+            )
 
         on_success = ensure_string(node.get("on_success"), f"workflow.nodes[{idx}].on_success")
         on_failure = ensure_string(node.get("on_failure"), f"workflow.nodes[{idx}].on_failure")
         collect_history_to_raw = node.get("collect_history_to")
         collect_history_to: str | None = None
+        collect_history_to_parts: tuple[str, ...] | None = None
         if collect_history_to_raw is not None:
             collect_history_to = ensure_string(
                 collect_history_to_raw,
@@ -240,6 +259,10 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
                     f"workflow.nodes[{idx}].collect_history_to must start with "
                     f"{ROUTE_BINDING_TARGET_PREFIX}"
                 )
+            collect_history_to_parts = parse_dotted_path(
+                collect_history_to,
+                f"workflow.nodes[{idx}].collect_history_to",
+            )
         route_bindings_raw = node.get("route_bindings", {})
         if not isinstance(route_bindings_raw, dict):
             raise RuntimeError(f"workflow.nodes[{idx}].route_bindings must be object")
@@ -252,6 +275,7 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
             )
 
         route_bindings: dict[str, dict[str, str]] = {}
+        route_bindings_parts: dict[str, list[dict[str, Any]]] = {}
         for route_name in ("success", "failure"):
             route_map_raw = route_bindings_raw.get(route_name, {})
             if not isinstance(route_map_raw, dict):
@@ -264,6 +288,7 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
                 )
 
             normalized_map: dict[str, str] = {}
+            normalized_bindings_parts: list[dict[str, Any]] = []
             for target_path, source_path in route_map_raw.items():
                 if not target_path.startswith(ROUTE_BINDING_TARGET_PREFIX):
                     raise RuntimeError(
@@ -275,7 +300,22 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
                     f"workflow.nodes[{idx}].route_bindings.{route_name}.{target_path}",
                 )
                 normalized_map[target_path] = source_path
+                normalized_bindings_parts.append(
+                    {
+                        "target": target_path,
+                        "source": source_path,
+                        "target_parts": parse_dotted_path(
+                            target_path,
+                            f"workflow.nodes[{idx}].route_bindings.{route_name}.{target_path}.target",
+                        ),
+                        "source_parts": parse_dotted_path(
+                            source_path,
+                            f"workflow.nodes[{idx}].route_bindings.{route_name}.{target_path}",
+                        ),
+                    }
+                )
             route_bindings[route_name] = normalized_map
+            route_bindings_parts[route_name] = normalized_bindings_parts
 
         nodes.append(
             {
@@ -283,10 +323,13 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
                 "prompt": prompt,
                 "prompt_field": f"workflow.nodes[{idx}].prompt",
                 "input_map": input_map,
+                "input_map_parts": input_map_parts,
                 "on_success": on_success,
                 "on_failure": on_failure,
                 "collect_history_to": collect_history_to,
+                "collect_history_to_parts": collect_history_to_parts,
                 "route_bindings": route_bindings,
+                "route_bindings_parts": route_bindings_parts,
             }
         )
 
@@ -318,9 +361,14 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
 @task
 def build_prompt_inputs(node: dict[str, Any], runtime_state: dict[str, Any]) -> dict[str, Any]:
     prompt_inputs: dict[str, Any] = {}
-    for key, source_path in node["input_map"].items():
-        validate_source_path(source_path, f"node '{node['id']}' input_map path '{source_path}'")
-        prompt_inputs[key] = resolve_dotted_path(runtime_state, source_path)
+    input_map = node.get("input_map", {})
+    input_map_parts = node.get("input_map_parts") or {
+        key: parse_dotted_path(source_path, f"node '{node['id']}' input_map path '{source_path}'")
+        for key, source_path in input_map.items()
+    }
+    for key, source_parts in input_map_parts.items():
+        source_path = input_map[key]
+        prompt_inputs[key] = resolve_dotted_parts(runtime_state, source_parts, source_path)
     return prompt_inputs
 
 
@@ -517,13 +565,43 @@ def resolve_next_node(node: dict[str, Any], pass_flag: bool, existing_node_ids: 
 @task
 def apply_route_bindings(node: dict[str, Any], pass_flag: bool, runtime_state: dict[str, Any]) -> dict[str, str]:
     route_name = "success" if pass_flag else "failure"
-    bindings = node.get("route_bindings", {}).get(route_name, {})
+    bindings_parts = node.get("route_bindings_parts", {}).get(route_name)
+    if bindings_parts is None:
+        bindings_parts = []
+        for target_path, source_path in node.get("route_bindings", {}).get(route_name, {}).items():
+            bindings_parts.append(
+                {
+                    "target": target_path,
+                    "source": source_path,
+                    "target_parts": parse_dotted_path(target_path, target_path),
+                    "source_parts": parse_dotted_path(source_path, source_path),
+                }
+            )
     applied: dict[str, str] = {}
-    for target_path, source_path in bindings.items():
-        value = resolve_dotted_path(runtime_state, source_path)
-        set_dotted_path(runtime_state, target_path, value)
+    for binding in bindings_parts:
+        target_path = binding["target"]
+        source_path = binding["source"]
+        value = resolve_dotted_parts(runtime_state, binding["source_parts"], source_path)
+        set_dotted_parts(runtime_state, binding["target_parts"], target_path, value)
         applied[target_path] = source_path
     return applied
+
+
+@task
+def ensure_history_list(
+    runtime_state: dict[str, Any],
+    target_path: str,
+    target_parts: tuple[str, ...] | None = None,
+) -> list[Any]:
+    parts = target_parts or parse_dotted_path(target_path, target_path)
+    try:
+        current = resolve_dotted_parts(runtime_state, parts, target_path)
+    except RuntimeError:
+        current = []
+        set_dotted_parts(runtime_state, parts, target_path, current)
+    if not isinstance(current, list):
+        raise RuntimeError(f"History target must be array at path: {target_path}")
+    return current
 
 
 @task
@@ -535,16 +613,7 @@ def collect_output_history(
     target_path = node.get("collect_history_to")
     if not target_path:
         return None
-
-    try:
-        current = resolve_dotted_path(runtime_state, target_path)
-    except RuntimeError:
-        current = []
-        set_dotted_path(runtime_state, target_path, current)
-
-    if not isinstance(current, list):
-        raise RuntimeError(f"History target must be array at path: {target_path}")
-
+    current = ensure_history_list(runtime_state, target_path, node.get("collect_history_to_parts"))
     current.append(copy.deepcopy(parsed_output))
     return target_path
 
@@ -554,13 +623,7 @@ def initialize_history_targets(workflow_nodes: list[dict[str, Any]], runtime_sta
         target_path = node.get("collect_history_to")
         if not target_path:
             continue
-        try:
-            current = resolve_dotted_path(runtime_state, target_path)
-        except RuntimeError:
-            set_dotted_path(runtime_state, target_path, [])
-            continue
-        if not isinstance(current, list):
-            raise RuntimeError(f"History target must be array at path: {target_path}")
+        ensure_history_list(runtime_state, target_path, node.get("collect_history_to_parts"))
 
 
 @task
