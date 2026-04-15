@@ -1016,6 +1016,26 @@ class BuiltinPresetWiringTests(unittest.TestCase):
         )
         self.assertEqual(arch_review["route_bindings"], {"success": {}, "failure": {}})
 
+    def test_doc_reviewer_loop_is_review_only_and_tracks_all_history(self):
+        config = module.load_config(str(ROOT / "presets" / "doc_reviewer_loop.yaml"), {})
+        nodes = {node["id"]: node for node in config["workflow"]["nodes"]}
+
+        self.assertEqual(config["workflow"]["start"], "doc_reviwer")
+        self.assertIn("doc_reviwer", nodes)
+        self.assertEqual(set(nodes.keys()), {"doc_reviwer"})
+        self.assertNotIn("bootstrap", nodes)
+        self.assertNotIn("fix", nodes)
+
+        doc_review = nodes["doc_reviwer"]
+        self.assertEqual(doc_review["collect_history_to"], "context.runtime.doc_review_history")
+        self.assertEqual(doc_review["on_failure"], "doc_reviwer")
+        self.assertEqual(doc_review["on_success"], "END")
+        self.assertEqual(
+            doc_review["input_map"]["doc_review_history"],
+            "context.runtime.doc_review_history",
+        )
+        self.assertEqual(doc_review["route_bindings"], {"success": {}, "failure": {}})
+
 
 class CliHelperTests(unittest.TestCase):
     def test_parse_context_overrides_last_value_wins(self):

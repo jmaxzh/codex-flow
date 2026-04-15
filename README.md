@@ -27,6 +27,12 @@ python3 scripts/codex_automation_loops.py --preset refactor_loop
 python3 scripts/codex_automation_loops.py --preset reviewer_loop
 ```
 
+新增文档 reviewer 循环预设（仅 `doc_reviwer`，聚焦文档改动质量）：
+
+```bash
+python3 scripts/codex_automation_loops.py --preset doc_reviewer_loop
+```
+
 `refactor_loop` 内的评审角色已命名为 `arch_reviwer`（与 `refactor` 迭代，不使用 fix 角色）。
 
 带上下文注入覆盖示例（可重复 `--context`）：
@@ -241,3 +247,4 @@ prompt: |
 - [presets/implement_loop.yaml](./presets/implement_loop.yaml)
 - [presets/refactor_loop.yaml](./presets/refactor_loop.yaml)
 - [presets/reviewer_loop.yaml](./presets/reviewer_loop.yaml)
+- [presets/doc_reviewer_loop.yaml](./presets/doc_reviewer_loop.yaml)
