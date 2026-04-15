@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import subprocess
@@ -37,16 +38,24 @@ except Exception as exc:  # pragma: no cover - runtime dependency guard
 else:
     YAML_IMPORT_ERROR = None
 
+try:
+    from jinja2 import Environment, StrictUndefined
+    from jinja2.runtime import Undefined
+except Exception as exc:  # pragma: no cover - runtime dependency guard
+    JINJA_IMPORT_ERROR = exc
+    Environment = None  # type: ignore[assignment]
+    StrictUndefined = None  # type: ignore[assignment]
+    Undefined = object  # type: ignore[assignment,misc]
+else:
+    JINJA_IMPORT_ERROR = None
+
 
 PRESETS_DIR = "presets"
 PRESET_FILE_SUFFIX = ".yaml"
 DEFAULT_EXECUTOR_CMD = ["codex", "exec", "--skip-git-repo-check"]
 END_NODE = "END"
-PROMPT_VAR_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
 ALLOWED_SOURCE_PREFIXES = ("context.defaults.", "context.runtime.", "outputs.")
 ROUTE_BINDING_TARGET_PREFIX = "context.runtime."
-
-
 def resolve_path(path_value: str | Path, base_dir: Path) -> Path:
     path = Path(path_value).expanduser()
     if not path.is_absolute():
@@ -219,6 +228,18 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
 
         on_success = ensure_string(node.get("on_success"), f"workflow.nodes[{idx}].on_success")
         on_failure = ensure_string(node.get("on_failure"), f"workflow.nodes[{idx}].on_failure")
+        collect_history_to_raw = node.get("collect_history_to")
+        collect_history_to: str | None = None
+        if collect_history_to_raw is not None:
+            collect_history_to = ensure_string(
+                collect_history_to_raw,
+                f"workflow.nodes[{idx}].collect_history_to",
+            )
+            if not collect_history_to.startswith(ROUTE_BINDING_TARGET_PREFIX):
+                raise RuntimeError(
+                    f"workflow.nodes[{idx}].collect_history_to must start with "
+                    f"{ROUTE_BINDING_TARGET_PREFIX}"
+                )
         route_bindings_raw = node.get("route_bindings", {})
         if not isinstance(route_bindings_raw, dict):
             raise RuntimeError(f"workflow.nodes[{idx}].route_bindings must be object")
@@ -260,9 +281,11 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
             {
                 "id": node_id,
                 "prompt": prompt,
+                "prompt_field": f"workflow.nodes[{idx}].prompt",
                 "input_map": input_map,
                 "on_success": on_success,
                 "on_failure": on_failure,
+                "collect_history_to": collect_history_to,
                 "route_bindings": route_bindings,
             }
         )
@@ -280,6 +303,7 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
 
     return {
         "version": 1,
+        "config_path": str(Path(config_path).resolve()),
         "run": {
             "project_root": str(project_root),
             "state_dir": str(state_dir),
@@ -303,22 +327,113 @@ def build_prompt_inputs(node: dict[str, Any], runtime_state: dict[str, Any]) -> 
 def stringify_prompt_value(value: Any) -> str:
     if isinstance(value, str):
         return value
-    return json.dumps(value, ensure_ascii=False, indent=2)
+    return json.dumps(to_plain_prompt_value(value), ensure_ascii=False, indent=2)
+
+
+class PromptInputsProxy(dict[str, Any]):
+    """Dict-like Jinja context where key lookup wins over dict attributes."""
+
+    def __getattribute__(self, name: str) -> Any:
+        if name.startswith("_"):
+            return dict.__getattribute__(self, name)
+        if dict.__contains__(self, name):
+            return dict.__getitem__(self, name)
+        raise AttributeError(name)
+
+
+def to_plain_prompt_value(value: Any) -> Any:
+    if isinstance(value, PromptInputsProxy):
+        return {k: to_plain_prompt_value(v) for k, v in dict.items(value)}
+    if isinstance(value, list):
+        return [to_plain_prompt_value(v) for v in value]
+    return value
+
+
+def to_prompt_inputs_proxy(value: Any) -> Any:
+    if isinstance(value, dict):
+        return PromptInputsProxy({k: to_prompt_inputs_proxy(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return [to_prompt_inputs_proxy(v) for v in value]
+    return value
+
+
+def finalize_prompt_value(value: Any) -> Any:
+    if isinstance(value, Undefined):
+        return value
+    return stringify_prompt_value(value)
+
+
+def prompt_render_error(node_id: str, prompt_field: str, message: str) -> RuntimeError:
+    return RuntimeError(f"{prompt_field} (node_id={node_id}) render failed: {message}")
 
 
 @task
-def render_prompt(node_prompt: str, prompt_inputs: dict[str, Any]) -> str:
-    def replace_var(match: re.Match[str]) -> str:
-        expr = match.group(1).strip()
-        if not expr.startswith("inputs."):
-            raise RuntimeError(f"Unsupported template variable: {{{{{expr}}}}}")
-        input_path = expr[len("inputs.") :]
-        if not input_path:
-            raise RuntimeError("Template variable cannot be empty")
-        value = resolve_dotted_path({"inputs": prompt_inputs}, f"inputs.{input_path}")
-        return stringify_prompt_value(value)
+def render_prompt(
+    node_prompt: str,
+    prompt_inputs: dict[str, Any],
+    config_path: str,
+    node_id: str,
+    prompt_field: str,
+) -> str:
+    if JINJA_IMPORT_ERROR is not None:
+        raise RuntimeError(f"Missing dependency: jinja2 ({JINJA_IMPORT_ERROR})")
 
-    return PROMPT_VAR_PATTERN.sub(replace_var, node_prompt)
+    config_dir = Path(config_path).resolve().parent
+
+    def prompt_input(path_value: Any) -> Any:
+        if not isinstance(path_value, str):
+            raise RuntimeError(f"prompt_input(path) expects string path, got {type(path_value).__name__}")
+        input_path = path_value.strip()
+        if not input_path:
+            raise RuntimeError("prompt_input(path) expects non-empty path, got empty string")
+        return resolve_dotted_path({"inputs": prompt_inputs}, f"inputs.{input_path}")
+
+    def prompt_file(path_value: Any) -> str:
+        if not isinstance(path_value, str):
+            raise RuntimeError(
+                f"prompt_file(path) expects string path, got {type(path_value).__name__}"
+            )
+        include_raw = path_value.strip()
+        if not include_raw:
+            raise RuntimeError(
+                "prompt_file(path) expects non-empty relative path, got empty string"
+            )
+
+        path_obj = Path(include_raw).expanduser()
+        if path_obj.is_absolute():
+            raise RuntimeError(
+                f"prompt_file(path) only supports relative path, got absolute path: {include_raw}. "
+                "Use a path relative to the workflow config file."
+            )
+
+        include_path = resolve_path(path_obj, config_dir)
+        try:
+            return read_text(include_path)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"prompt_file(path) file not found: {include_raw}. "
+                "Check the path relative to the workflow config file."
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(
+                f"prompt_file(path) cannot read file: {include_raw} ({exc}). "
+                "Check file permissions and UTF-8 content."
+            ) from exc
+
+    try:
+        env = Environment(
+            undefined=StrictUndefined,
+            autoescape=False,
+            finalize=finalize_prompt_value,
+        )
+        template = env.from_string(node_prompt)
+        return template.render(
+            inputs=to_prompt_inputs_proxy(prompt_inputs),
+            prompt_file=prompt_file,
+            prompt_input=prompt_input,
+        )
+    except Exception as exc:
+        raise prompt_render_error(node_id, prompt_field, str(exc)) from exc
 
 
 @task
@@ -412,6 +527,43 @@ def apply_route_bindings(node: dict[str, Any], pass_flag: bool, runtime_state: d
 
 
 @task
+def collect_output_history(
+    node: dict[str, Any],
+    parsed_output: dict[str, Any],
+    runtime_state: dict[str, Any],
+) -> str | None:
+    target_path = node.get("collect_history_to")
+    if not target_path:
+        return None
+
+    try:
+        current = resolve_dotted_path(runtime_state, target_path)
+    except RuntimeError:
+        current = []
+        set_dotted_path(runtime_state, target_path, current)
+
+    if not isinstance(current, list):
+        raise RuntimeError(f"History target must be array at path: {target_path}")
+
+    current.append(copy.deepcopy(parsed_output))
+    return target_path
+
+
+def initialize_history_targets(workflow_nodes: list[dict[str, Any]], runtime_state: dict[str, Any]) -> None:
+    for node in workflow_nodes:
+        target_path = node.get("collect_history_to")
+        if not target_path:
+            continue
+        try:
+            current = resolve_dotted_path(runtime_state, target_path)
+        except RuntimeError:
+            set_dotted_path(runtime_state, target_path, [])
+            continue
+        if not isinstance(current, list):
+            raise RuntimeError(f"History target must be array at path: {target_path}")
+
+
+@task
 def persist_state_and_logs(
     state_dir: str,
     step: int,
@@ -480,6 +632,7 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
         "context": {"defaults": config["context"]["defaults"], "runtime": {}},
         "outputs": {},
     }
+    initialize_history_targets(workflow["nodes"], runtime_state)
     attempt_counter: dict[str, int] = {}
     steps_executed = 0
 
@@ -495,7 +648,13 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
         steps_executed += 1
 
         prompt_inputs = build_prompt_inputs(node, runtime_state)
-        rendered = render_prompt(node["prompt"], prompt_inputs)
+        rendered = render_prompt(
+            node["prompt"],
+            prompt_inputs,
+            config["config_path"],
+            node["id"],
+            node["prompt_field"],
+        )
 
         safe_node = re.sub(r"[^a-zA-Z0-9_-]", "_", current_node_id)
         raw_output_path = state_dir / f"step{step:03d}__{safe_node}__attempt{attempt:02d}__raw.txt"
@@ -513,6 +672,7 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
         raw_output = read_text(raw_output_path)
         parsed_output, pass_flag = parse_and_validate_output(raw_output)
         runtime_state["outputs"][current_node_id] = parsed_output
+        collect_output_history(node, parsed_output, runtime_state)
 
         next_node = resolve_next_node(node, pass_flag, node_ids)
         applied_route_bindings = apply_route_bindings(node, pass_flag, runtime_state)
@@ -582,6 +742,9 @@ def main() -> int:
         return 2
     if YAML_IMPORT_ERROR is not None:
         print(f"Missing dependency: pyyaml ({YAML_IMPORT_ERROR})", file=sys.stderr)
+        return 2
+    if JINJA_IMPORT_ERROR is not None:
+        print(f"Missing dependency: jinja2 ({JINJA_IMPORT_ERROR})", file=sys.stderr)
         return 2
 
     try:

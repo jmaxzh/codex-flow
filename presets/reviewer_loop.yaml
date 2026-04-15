@@ -10,17 +10,17 @@ executor:
 
 context:
   defaults:
-    user_instruction: "请评审未提交代码，直到没有新增问题。"
+    user_instruction: "请 review 未提交代码，直到没有新增问题。"
 
 workflow:
-  start: arch_reviwer
+  start: bug_reviwer
   nodes:
-    - id: arch_reviwer
+    - id: bug_reviwer
       prompt: |
         用户指令: {{ inputs.user_instruction }}
-        历史评审输出: {{ inputs.arch_review_history }}
+        历史评审输出: {{ inputs.bug_review_history }}
 
-        {{ prompt_file("./prompts/shared/arch_reviwer_role.md") }}
+        {{ prompt_file("./prompts/shared/bug_reviwer_role.md") }}
 
         仅输出“本轮新增问题”，不要重复历史中已发现的问题。
         若无新增问题，请返回 pass=true 且 issues 为空数组。
@@ -32,7 +32,8 @@ workflow:
         }
       input_map:
         user_instruction: context.defaults.user_instruction
-        arch_review_history: context.runtime.arch_review_history
-      collect_history_to: context.runtime.arch_review_history
+        bug_review_history: context.runtime.bug_review_history
+
+      collect_history_to: context.runtime.bug_review_history
       on_success: END
-      on_failure: arch_reviwer
+      on_failure: bug_reviwer
