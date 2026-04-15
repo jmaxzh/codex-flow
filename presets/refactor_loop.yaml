@@ -22,7 +22,7 @@ workflow:
 
         {{ prompt_file("./prompts/shared/arch_reviwer_role.md") }}
 
-        仅输出“本轮新增问题”，不要重复历史中已发现的问题。
+        仅输出“本轮新增问题（含代码位置）”，不要重复历史中已发现的问题。
         若无新增问题，请返回 pass=true 且 issues 为空数组。
         最后一行输出严格 JSON object（不要使用代码块），至少包含：
         {
