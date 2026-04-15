@@ -225,6 +225,16 @@ class ConfigValidationTests(PatchedYamlMixin, unittest.TestCase):
                 ("outputs", "n1"),
             )
 
+    def test_load_config_rejects_non_boolean_parse_output_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            payload = self._minimal_valid_config(project_root=tmp)
+            payload["workflow"]["nodes"][0]["parse_output_json"] = "false"
+            config_path = self._write_config(tmp_path, payload)
+
+            with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "parse_output_json"):
+                module.load_config(str(config_path), {})
+
 
 class OutputContractTests(unittest.TestCase):
     def test_parse_and_validate_uses_last_non_empty_line(self):
@@ -245,6 +255,11 @@ class OutputContractTests(unittest.TestCase):
     def test_parse_and_validate_requires_boolean_pass(self):
         with self.assertRaisesRegex(RuntimeError, "must be boolean"):
             module.parse_and_validate_output('{"pass":"yes"}')
+
+    def test_resolve_node_output_skips_json_parse_when_disabled(self):
+        output, pass_flag = module.resolve_node_output("implementation done\nnotes\n", False)
+        self.assertTrue(pass_flag)
+        self.assertEqual(output, "implementation done\nnotes")
 
 
 class RoutingTests(unittest.TestCase):
@@ -813,6 +828,64 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 self.assertEqual(len(lines), 1)
                 self.assertTrue((run_dir / "step001__n1__attempt01__meta.json").is_file())
 
+    def test_run_workflow_supports_plain_text_output_when_json_parse_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = self.write_workflow_config(
+                tmp_path,
+                project_root=tmp_path,
+                max_steps=3,
+                defaults={},
+                start="implement",
+                nodes=[
+                    {
+                        "id": "implement",
+                        "prompt": "implement",
+                        "input_map": {},
+                        "parse_output_json": False,
+                        "on_success": "check",
+                        "on_failure": "END",
+                    },
+                    {
+                        "id": "check",
+                        "prompt": "check {{ inputs.impl }}",
+                        "input_map": {"impl": "outputs.implement"},
+                        "on_success": "END",
+                        "on_failure": "END",
+                    },
+                ],
+            )
+            captured_prompts: list[str] = []
+
+            def fake_codex_exec(
+                project_root: str,
+                executor_cmd: list[str],
+                prompt: str,
+                out_file: str,
+                task_log_dir: str,
+                node_id: str,
+                step: int,
+                attempt: int,
+            ) -> str:
+                captured_prompts.append(prompt)
+                if node_id == "implement":
+                    Path(out_file).write_text("Implemented feature A.\nNo JSON line.", encoding="utf-8")
+                else:
+                    Path(out_file).write_text('{"pass": true, "verified": true}', encoding="utf-8")
+                log_path = Path(task_log_dir) / f"fake_{step}_{attempt}.log"
+                log_path.write_text("ok", encoding="utf-8")
+                return str(log_path)
+
+            with (
+                self.patch_yaml(),
+                patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+            ):
+                summary = module.run_workflow(str(config_path), {})
+
+            self.assertEqual(summary["status"], "completed")
+            self.assertEqual(summary["outputs"]["implement"], "Implemented feature A.\nNo JSON line.")
+            self.assertIn("Implemented feature A.", captured_prompts[1])
+
     def test_build_step_prefix_and_log_name_use_same_node_sanitization(self):
         prefix = module.build_step_prefix(1, "node/a b", 2)
         self.assertEqual(prefix, "step001__node_a_b__attempt02")
@@ -981,17 +1054,16 @@ class BuiltinPresetWiringTests(unittest.TestCase):
         )
         self.assertEqual(review["route_bindings"], {"success": {}, "failure": {}})
 
-    def test_implement_loop_wires_latest_impl_into_checker(self):
+    def test_implement_loop_marks_implement_nodes_as_plain_text_output(self):
         config = module.load_config(str(ROOT / "presets" / "implement_loop.yaml"), {})
         nodes = {node["id"]: node for node in config["workflow"]["nodes"]}
 
+        self.assertFalse(nodes["implement_first"]["parse_output_json"])
+        self.assertFalse(nodes["implement_loop"]["parse_output_json"])
+        self.assertTrue(nodes["check"]["parse_output_json"])
         self.assertEqual(
-            nodes["implement_first"]["route_bindings"]["success"]["context.runtime.latest_impl"],
-            "outputs.implement_first",
-        )
-        self.assertEqual(
-            nodes["check"]["input_map"]["latest_impl"],
-            "context.runtime.latest_impl",
+            nodes["check"]["route_bindings"]["failure"]["context.runtime.latest_check"],
+            "outputs.check",
         )
 
     def test_refactor_loop_uses_arch_reviwer_and_refactor_only(self):
@@ -1049,17 +1121,47 @@ class CliHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "cannot contain"):
             module.parse_context_overrides([["a.b", "x"]])
 
-    def test_resolve_preset_path_resolves_name_into_presets_dir(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            resolved = module.resolve_preset_path(tmp_path, "implement_loop")
-            self.assertEqual(resolved, (tmp_path / "presets" / "implement_loop.yaml").resolve())
+    def test_resolve_preset_path_resolves_builtin_identifier_in_repo_presets_dir(self):
+        resolved = module.resolve_preset_path("implement_loop")
+        expected = (ROOT / "presets" / "implement_loop.yaml").resolve()
+        self.assertEqual(resolved, expected)
 
-    def test_resolve_preset_path_accepts_explicit_path(self):
+    def test_resolve_preset_path_is_cwd_independent(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            resolved = module.resolve_preset_path(tmp_path, "configs/x.yaml")
-            self.assertEqual(resolved, (tmp_path / "configs" / "x.yaml").resolve())
+            original_cwd = Path.cwd()
+            cwd_a = Path(tmp) / "a"
+            cwd_b = Path(tmp) / "b"
+            cwd_a.mkdir(parents=True, exist_ok=True)
+            cwd_b.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chdir(cwd_a)
+                resolved_a = module.resolve_preset_path("implement_loop")
+                os.chdir(cwd_b)
+                resolved_b = module.resolve_preset_path("implement_loop")
+            finally:
+                os.chdir(original_cwd)
+        self.assertEqual(resolved_a, resolved_b)
+        self.assertEqual(resolved_a, (ROOT / "presets" / "implement_loop.yaml").resolve())
+
+    def test_resolve_preset_path_rejects_path_like_value(self):
+        with self.assertRaisesRegex(RuntimeError, "expects a preset identifier"):
+            module.resolve_preset_path("presets/implement_loop.yaml")
+
+    def test_resolve_preset_path_rejects_empty_or_whitespace_value(self):
+        with self.assertRaisesRegex(RuntimeError, "non-empty preset identifier"):
+            module.resolve_preset_path("   ")
+
+    def test_resolve_preset_path_rejects_yaml_suffix_with_migration_hint(self):
+        with self.assertRaisesRegex(RuntimeError, "Use 'implement_loop' instead of 'implement_loop.yaml'"):
+            module.resolve_preset_path("implement_loop.yaml")
+
+    def test_resolve_preset_path_reports_available_presets_for_unknown_identifier(self):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Unknown preset identifier: 'missing'.*Available built-in presets: "
+            "doc_reviewer_loop, implement_loop, refactor_loop, reviewer_loop",
+        ):
+            module.resolve_preset_path("missing")
 
 
 if __name__ == "__main__":

@@ -122,6 +122,12 @@ def ensure_string_list(value: Any, field_name: str) -> list[str]:
     return value
 
 
+def ensure_bool(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise RuntimeError(f"'{field_name}' must be boolean")
+    return value
+
+
 def ensure_flat_context_map(value: Any, field_name: str) -> dict[str, Any]:
     data = ensure_dict(value, field_name)
     for key, item in data.items():
@@ -172,13 +178,61 @@ def set_dotted_parts(data: dict[str, Any], path_parts: tuple[str, ...], dotted_p
     current[path_parts[-1]] = value
 
 
-def resolve_preset_path(cwd: Path, preset_value: str) -> Path:
-    if "/" in preset_value or "\\" in preset_value:
-        return resolve_path(preset_value, cwd)
-    file_name = preset_value
-    if not file_name.endswith(PRESET_FILE_SUFFIX):
-        file_name = f"{file_name}{PRESET_FILE_SUFFIX}"
-    return resolve_path(Path(PRESETS_DIR) / file_name, cwd)
+def get_repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def get_builtin_presets_dir() -> Path:
+    return get_repo_root() / PRESETS_DIR
+
+
+def list_builtin_preset_identifiers(presets_dir: Path) -> list[str]:
+    if not presets_dir.is_dir():
+        return []
+    return sorted(
+        entry.stem
+        for entry in presets_dir.iterdir()
+        if entry.is_file() and entry.name.endswith(PRESET_FILE_SUFFIX)
+    )
+
+
+def format_available_presets(preset_ids: list[str]) -> str:
+    if not preset_ids:
+        return "(none found)"
+    return ", ".join(preset_ids)
+
+
+def validate_preset_identifier(preset_value: str) -> str:
+    preset_id = preset_value.strip()
+    if not preset_id:
+        raise RuntimeError("--preset requires a non-empty preset identifier")
+    if "/" in preset_id or "\\" in preset_id:
+        raise RuntimeError(
+            "--preset expects a preset identifier (for example: implement_loop), not a path. "
+            "If you used a preset file path before, move or reference that preset under repository "
+            "presets/ and pass only its identifier."
+        )
+    if preset_id.lower().endswith(PRESET_FILE_SUFFIX):
+        migration_target = preset_id[: -len(PRESET_FILE_SUFFIX)] or "<preset-id>"
+        raise RuntimeError(
+            "--preset accepts extensionless preset identifiers. "
+            f"Use '{migration_target}' instead of '{preset_id}'."
+        )
+    return preset_id
+
+
+def resolve_preset_path(preset_value: str) -> Path:
+    preset_id = validate_preset_identifier(preset_value)
+    presets_dir = get_builtin_presets_dir()
+    preset_path = (presets_dir / f"{preset_id}{PRESET_FILE_SUFFIX}").resolve()
+    if not preset_path.is_file():
+        available = format_available_presets(list_builtin_preset_identifiers(presets_dir))
+        raise RuntimeError(
+            f"Unknown preset identifier: '{preset_id}'. "
+            f"Available built-in presets: {available}. "
+            f"Lookup directory: {presets_dir}"
+        )
+    return preset_path
 
 
 def parse_context_overrides(pairs: list[list[str]] | None) -> dict[str, str]:
@@ -261,6 +315,10 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
 
         on_success = ensure_string(node.get("on_success"), f"workflow.nodes[{idx}].on_success")
         on_failure = ensure_string(node.get("on_failure"), f"workflow.nodes[{idx}].on_failure")
+        parse_output_json = ensure_bool(
+            node.get("parse_output_json", True),
+            f"workflow.nodes[{idx}].parse_output_json",
+        )
         collect_history_to_raw = node.get("collect_history_to")
         collect_history_to: str | None = None
         collect_history_to_parts: tuple[str, ...] | None = None
@@ -341,6 +399,7 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
                 "input_map_parts": input_map_parts,
                 "on_success": on_success,
                 "on_failure": on_failure,
+                "parse_output_json": parse_output_json,
                 "collect_history_to": collect_history_to,
                 "collect_history_to_parts": collect_history_to_parts,
                 "route_bindings": route_bindings,
@@ -567,6 +626,13 @@ def parse_and_validate_output(raw_output: str) -> tuple[dict[str, Any], bool]:
 
 
 @task
+def resolve_node_output(raw_output: str, parse_output_json: bool) -> tuple[Any, bool]:
+    if parse_output_json:
+        return parse_and_validate_output(raw_output)
+    return raw_output.rstrip(), True
+
+
+@task
 def resolve_next_node(node: dict[str, Any], pass_flag: bool, existing_node_ids: list[str]) -> str:
     next_node = node["on_success"] if pass_flag else node["on_failure"]
     if next_node == END_NODE:
@@ -616,14 +682,14 @@ def ensure_history_list(
 @task
 def collect_output_history(
     node: dict[str, Any],
-    parsed_output: dict[str, Any],
+    node_output: Any,
     runtime_state: dict[str, Any],
 ) -> str | None:
     target_path = node.get("collect_history_to")
     if not target_path:
         return None
     current = ensure_history_list(runtime_state, target_path, node.get("collect_history_to_parts"))
-    current.append(copy.deepcopy(parsed_output))
+    current.append(copy.deepcopy(node_output))
     return target_path
 
 
@@ -645,7 +711,7 @@ def persist_state_and_logs(
     pass_flag: bool,
     rendered_prompt: str,
     raw_output_path: str,
-    parsed_output: dict[str, Any],
+    node_output: Any,
     codex_log_path: str,
     applied_route_bindings: dict[str, str],
 ) -> dict[str, str]:
@@ -658,7 +724,7 @@ def persist_state_and_logs(
     history_path = state_root / "history.jsonl"
 
     write_text(prompt_path, rendered_prompt)
-    write_json(parsed_path, parsed_output)
+    write_json(parsed_path, node_output)
     meta_payload = {
         "step": step,
         "node_id": node_id,
@@ -743,9 +809,9 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
         )
 
         raw_output = read_text(raw_output_path)
-        parsed_output, pass_flag = parse_and_validate_output(raw_output)
-        runtime_state["outputs"][current_node_id] = parsed_output
-        collect_output_history(node, parsed_output, runtime_state)
+        node_output, pass_flag = resolve_node_output(raw_output, node["parse_output_json"])
+        runtime_state["outputs"][current_node_id] = node_output
+        collect_output_history(node, node_output, runtime_state)
 
         next_node = resolve_next_node(node, pass_flag, node_ids)
         applied_route_bindings = apply_route_bindings(node, pass_flag, runtime_state)
@@ -758,7 +824,7 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
             pass_flag,
             rendered,
             str(raw_output_path),
-            parsed_output,
+            node_output,
             codex_log_path,
             applied_route_bindings,
         )
@@ -799,7 +865,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--preset",
         required=True,
-        help="Preset name in ./presets (without .yaml) or an explicit preset path",
+        help="Built-in preset identifier from repository presets/ (without .yaml), e.g. implement_loop",
     )
     parser.add_argument(
         "--context",
@@ -826,7 +892,7 @@ def main() -> int:
 
     try:
         context_overrides = parse_context_overrides(args.context)
-        config_path = resolve_preset_path(Path.cwd(), args.preset)
+        config_path = resolve_preset_path(args.preset)
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 2

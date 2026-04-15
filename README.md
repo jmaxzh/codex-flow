@@ -52,18 +52,25 @@ python3 scripts/codex_automation_loops.py \
    python3.13 -m pip install --break-system-packages --user -r requirements.txt
    ```
 
-2. 预设文件存在于 `presets/` 下，或 `--preset` 指向有效文件路径
+2. `--preset` 必须是仓库内置预设标识符（对应 `presets/<id>.yaml`）
 3. `run.project_root` 指向有效项目目录
 
 ## CLI 参数
 
-- `--preset <name-or-path>`（必选）
-  - 不包含路径分隔符时，解析为 `./presets/<name>.yaml`
-  - 包含路径分隔符时，按给定路径解析（相对当前目录或绝对路径）
+- `--preset <preset-id>`（必选）
+  - 仅接受扩展名省略的预设标识符（如 `implement_loop`）
+  - 由编排器固定解析到仓库 `presets/<preset-id>.yaml`，与当前工作目录无关
+  - 不接受路径形式（如 `presets/implement_loop.yaml`）与 `.yaml` 后缀（如 `implement_loop.yaml`）
 - `--context <key> <value>`（可选，可重复）
   - 仅支持扁平键值注入
   - `key` 不允许包含 `.`，不允许嵌套对象
   - 同 key 出现多次时，后者覆盖前者
+
+### `--preset` 迁移说明（BREAKING）
+
+- 旧行为允许 `--preset` 传文件路径；新行为仅允许预设标识符
+- 旧写法 `--preset presets/implement_loop.yaml` 改为 `--preset implement_loop`
+- 旧写法 `--preset implement_loop.yaml` 改为 `--preset implement_loop`
 
 ## 配置 DSL
 

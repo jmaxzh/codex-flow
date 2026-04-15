@@ -12,38 +12,29 @@ context:
   defaults:
     spec: "docs/prefect-codex-implement-loop-plan.md"
     user_instruction: "请按规格完成。"
-
+    
 workflow:
   start: implement_first
   nodes:
     - id: implement_first
       prompt: |
-        {{ prompt_file("./prompts/shared/implementer_role.md") }}
-
-        用户首轮指令: {{ inputs.user_instruction }}
         任务: {{ inputs.spec }}
-
-        最后一行输出严格 JSON object（不要使用代码块），至少包含：
-        {
-          "pass": true/false,
-          "change_summary": "..."
-        }
+        用户要求: {{ inputs.user_instruction }}
+        
+        {{ prompt_file("./prompts/shared/implementer_role.md") }}
 
       input_map:
         user_instruction: context.defaults.user_instruction
         spec: context.defaults.spec
+      parse_output_json: false
       on_success: check
       on_failure: END
-      route_bindings:
-        success:
-          context.runtime.latest_impl: outputs.implement_first
 
     - id: check
       prompt: |
-        {{ prompt_file("./prompts/shared/implementer_checker_role.md") }}
-
         任务: {{ inputs.spec }}
-        实现输出: {{ inputs.latest_impl }}
+
+        {{ prompt_file("./prompts/shared/implementer_checker_role.md") }}
 
         若全部完成，pass=true 且 todo 为空数组。
         若未完成，pass=false 且 todo 给出剩余待办（字符串数组）。
@@ -55,7 +46,6 @@ workflow:
         }
       input_map:
         spec: context.defaults.spec
-        latest_impl: context.runtime.latest_impl
       on_success: END
       on_failure: implement_loop
       route_bindings:
@@ -64,19 +54,17 @@ workflow:
 
     - id: implement_loop
       prompt: |
+        任务: {{ inputs.spec }}
+        未完成部分: {{ inputs.latest_check }}
+
         {{ prompt_file("./prompts/shared/implementer_role.md") }}
-        最后一行输出严格 JSON object（不要使用代码块），至少包含：
-        {
-          "pass": true/false,
-          "change_summary": "...",
-          "addressed_todo": ["..."]
-        }
-        输入规格: {{ inputs.spec }}
-        检查待办: {{ inputs.latest_check }}
-        请根据待办修复问题并更新实现。
+
+        继续实现任务的未完成部分。
+        
       input_map:
         spec: context.defaults.spec
         latest_check: context.runtime.latest_check
+      parse_output_json: false
       on_success: check
       on_failure: END
       route_bindings:
