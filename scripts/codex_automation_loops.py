@@ -56,6 +56,8 @@ DEFAULT_EXECUTOR_CMD = ["codex", "exec", "--skip-git-repo-check"]
 END_NODE = "END"
 ALLOWED_SOURCE_PREFIXES = ("context.defaults.", "context.runtime.", "outputs.")
 ROUTE_BINDING_TARGET_PREFIX = "context.runtime."
+
+
 def resolve_path(path_value: str | Path, base_dir: Path) -> Path:
     path = Path(path_value).expanduser()
     if not path.is_absolute():
@@ -83,10 +85,23 @@ def set_dotted_path(data: dict[str, Any], dotted_path: str, value: Any) -> None:
     set_dotted_parts(data, parse_dotted_path(dotted_path, dotted_path), dotted_path, value)
 
 
+def sanitize_node_id(node_id: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", node_id)
+
+
+def build_step_prefix(step: int, node_id: str, attempt: int) -> str:
+    return f"step{step:03d}__{sanitize_node_id(node_id)}__attempt{attempt:02d}"
+
+
+def make_run_id() -> str:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    return f"run__{ts}"
+
+
 def make_codex_log_path(task_log_dir: Path, node_id: str, step: int, attempt: int) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    safe_node = re.sub(r"[^a-zA-Z0-9_-]", "_", node_id)
-    return task_log_dir / f"{safe_node}__step{step:03d}__attempt{attempt:02d}__{ts}.log"
+    prefix = build_step_prefix(step, node_id, attempt)
+    return task_log_dir / f"{prefix}__{ts}.log"
 
 
 def ensure_dict(value: Any, field_name: str) -> dict[str, Any]:
@@ -362,10 +377,9 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
 def build_prompt_inputs(node: dict[str, Any], runtime_state: dict[str, Any]) -> dict[str, Any]:
     prompt_inputs: dict[str, Any] = {}
     input_map = node.get("input_map", {})
-    input_map_parts = node.get("input_map_parts") or {
-        key: parse_dotted_path(source_path, f"node '{node['id']}' input_map path '{source_path}'")
-        for key, source_path in input_map.items()
-    }
+    input_map_parts = node.get("input_map_parts")
+    if input_map_parts is None:
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled input_map_parts")
     for key, source_parts in input_map_parts.items():
         source_path = input_map[key]
         prompt_inputs[key] = resolve_dotted_parts(runtime_state, source_parts, source_path)
@@ -567,21 +581,14 @@ def apply_route_bindings(node: dict[str, Any], pass_flag: bool, runtime_state: d
     route_name = "success" if pass_flag else "failure"
     bindings_parts = node.get("route_bindings_parts", {}).get(route_name)
     if bindings_parts is None:
-        bindings_parts = []
-        for target_path, source_path in node.get("route_bindings", {}).get(route_name, {}).items():
-            bindings_parts.append(
-                {
-                    "target": target_path,
-                    "source": source_path,
-                    "target_parts": parse_dotted_path(target_path, target_path),
-                    "source_parts": parse_dotted_path(source_path, source_path),
-                }
-            )
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled route_bindings_parts")
     applied: dict[str, str] = {}
     for binding in bindings_parts:
         target_path = binding["target"]
         source_path = binding["source"]
         value = resolve_dotted_parts(runtime_state, binding["source_parts"], source_path)
+        if isinstance(value, (dict, list)):
+            value = copy.deepcopy(value)
         set_dotted_parts(runtime_state, binding["target_parts"], target_path, value)
         applied[target_path] = source_path
     return applied
@@ -593,7 +600,9 @@ def ensure_history_list(
     target_path: str,
     target_parts: tuple[str, ...] | None = None,
 ) -> list[Any]:
-    parts = target_parts or parse_dotted_path(target_path, target_path)
+    if target_parts is None:
+        raise RuntimeError(f"History target missing compiled path: {target_path}")
+    parts = target_parts
     try:
         current = resolve_dotted_parts(runtime_state, parts, target_path)
     except RuntimeError:
@@ -641,8 +650,7 @@ def persist_state_and_logs(
     applied_route_bindings: dict[str, str],
 ) -> dict[str, str]:
     state_root = Path(state_dir)
-    safe_node = re.sub(r"[^a-zA-Z0-9_-]", "_", node_id)
-    prefix = f"step{step:03d}__{safe_node}__attempt{attempt:02d}"
+    prefix = build_step_prefix(step, node_id, attempt)
 
     prompt_path = state_root / f"{prefix}__prompt.txt"
     parsed_path = state_root / f"{prefix}__parsed.json"
@@ -683,7 +691,10 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
     project_root = Path(run_cfg["project_root"])
     state_dir = Path(run_cfg["state_dir"])
     state_dir.mkdir(parents=True, exist_ok=True)
-    run_log_dir = state_dir / "logs" / f"workflow__{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_id = make_run_id()
+    run_state_dir = state_dir / "runs" / run_id
+    run_state_dir.mkdir(parents=True, exist_ok=True)
+    run_log_dir = run_state_dir / "logs" / f"workflow__{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_log_dir.mkdir(parents=True, exist_ok=True)
     print(f"[logs] task log dir: {run_log_dir}", flush=True)
 
@@ -719,8 +730,7 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
             node["prompt_field"],
         )
 
-        safe_node = re.sub(r"[^a-zA-Z0-9_-]", "_", current_node_id)
-        raw_output_path = state_dir / f"step{step:03d}__{safe_node}__attempt{attempt:02d}__raw.txt"
+        raw_output_path = run_state_dir / f"{build_step_prefix(step, current_node_id, attempt)}__raw.txt"
         codex_log_path = run_codex_exec(
             str(project_root),
             config["executor"]["cmd"],
@@ -740,7 +750,7 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
         next_node = resolve_next_node(node, pass_flag, node_ids)
         applied_route_bindings = apply_route_bindings(node, pass_flag, runtime_state)
         persist_state_and_logs(
-            str(state_dir),
+            str(run_state_dir),
             step,
             current_node_id,
             attempt,
@@ -754,7 +764,7 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
         )
 
         write_json(
-            state_dir / "runtime_state.json",
+            run_state_dir / "runtime_state.json",
             {
                 "current_node": next_node,
                 "step": step,
@@ -772,11 +782,15 @@ def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[st
 
     final_summary = {
         "status": "completed",
+        "run_id": run_id,
+        "run_state_dir": str(run_state_dir),
         "final_node": current_node_id,
         "steps_executed": steps_executed,
         "outputs": runtime_state["outputs"],
     }
-    write_json(state_dir / "run_summary.json", final_summary)
+    write_json(run_state_dir / "run_summary.json", final_summary)
+    write_json(state_dir / "latest_run.json", {"run_id": run_id, "run_state_dir": str(run_state_dir)})
+    write_text(state_dir / "latest_run_id", f"{run_id}\n")
     return final_summary
 
 

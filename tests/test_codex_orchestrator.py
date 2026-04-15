@@ -255,6 +255,49 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(module.resolve_next_node(node, True, existing), "done")
         self.assertEqual(module.resolve_next_node(node, False, existing), "fix")
 
+    def test_apply_route_bindings_copies_mutable_values_before_write(self):
+        node = {
+            "id": "n1",
+            "route_bindings": {
+                "success": {"context.runtime.latest_impl": "outputs.n1"},
+                "failure": {},
+            },
+            "route_bindings_parts": {
+                "success": [
+                    {
+                        "target": "context.runtime.latest_impl",
+                        "source": "outputs.n1",
+                        "target_parts": ("context", "runtime", "latest_impl"),
+                        "source_parts": ("outputs", "n1"),
+                    }
+                ],
+                "failure": [],
+            },
+        }
+        runtime_state = {
+            "context": {"defaults": {}, "runtime": {}},
+            "outputs": {"n1": {"nested": {"k": 1}, "arr": [1]}},
+        }
+
+        module.apply_route_bindings(node, True, runtime_state)
+
+        runtime_state["context"]["runtime"]["latest_impl"]["nested"]["k"] = 99
+        runtime_state["context"]["runtime"]["latest_impl"]["arr"].append(2)
+        self.assertEqual(runtime_state["outputs"]["n1"]["nested"]["k"], 1)
+        self.assertEqual(runtime_state["outputs"]["n1"]["arr"], [1])
+
+    def test_apply_route_bindings_requires_compiled_parts(self):
+        node = {
+            "id": "n1",
+            "route_bindings": {"success": {"context.runtime.latest_impl": "outputs.n1"}},
+        }
+        runtime_state = {
+            "context": {"defaults": {}, "runtime": {}},
+            "outputs": {"n1": {"pass": True}},
+        }
+        with self.assertRaisesRegex(RuntimeError, "missing compiled route_bindings_parts"):
+            module.apply_route_bindings(node, True, runtime_state)
+
 
 class DataPassthroughTests(unittest.TestCase):
     def test_downstream_can_read_upstream_full_json(self):
@@ -262,6 +305,9 @@ class DataPassthroughTests(unittest.TestCase):
             "id": "implement",
             "input_map": {
                 "plan_output": "outputs.plan",
+            },
+            "input_map_parts": {
+                "plan_output": ("outputs", "plan"),
             },
         }
         runtime_state = {
@@ -293,6 +339,7 @@ class DataPassthroughTests(unittest.TestCase):
         node = {
             "id": "check",
             "input_map": {"latest_impl": "context.runtime.latest_impl"},
+            "input_map_parts": {"latest_impl": ("context", "runtime", "latest_impl")},
         }
         runtime_state = {
             "context": {
@@ -319,18 +366,38 @@ class DataPassthroughTests(unittest.TestCase):
         prompt_inputs = module.build_prompt_inputs(node, runtime_state)
         self.assertEqual(prompt_inputs["plan_output"], runtime_state["outputs"]["plan"])
 
+    def test_build_prompt_inputs_requires_compiled_parts(self):
+        node = {
+            "id": "implement",
+            "input_map": {"plan_output": "outputs.plan"},
+        }
+        runtime_state = {
+            "context": {"defaults": {}, "runtime": {}},
+            "outputs": {"plan": {"pass": True}},
+        }
+        with self.assertRaisesRegex(RuntimeError, "missing compiled input_map_parts"):
+            module.build_prompt_inputs(node, runtime_state)
+
 
 class HistoryTargetTests(unittest.TestCase):
     def test_ensure_history_list_creates_missing_path_and_returns_list(self):
         runtime_state = {"context": {"defaults": {}, "runtime": {}}, "outputs": {}}
-        history = module.ensure_history_list(runtime_state, "context.runtime.review_history")
+        history = module.ensure_history_list(
+            runtime_state,
+            "context.runtime.review_history",
+            ("context", "runtime", "review_history"),
+        )
         self.assertEqual(history, [])
         self.assertIs(history, runtime_state["context"]["runtime"]["review_history"])
 
     def test_ensure_history_list_rejects_non_list_target(self):
         runtime_state = {"context": {"defaults": {}, "runtime": {"review_history": {}}}, "outputs": {}}
         with self.assertRaisesRegex(RuntimeError, "History target must be array"):
-            module.ensure_history_list(runtime_state, "context.runtime.review_history")
+            module.ensure_history_list(
+                runtime_state,
+                "context.runtime.review_history",
+                ("context", "runtime", "review_history"),
+            )
 
 
 class PromptRenderingTests(PatchedYamlMixin, unittest.TestCase):
@@ -695,15 +762,63 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             self.assertIn("implement_loop", summary["outputs"])
             self.assertIn("check", summary["outputs"])
 
-            runtime_state = json.loads(
-                (tmp_path / ".codex-loop-state" / "runtime_state.json").read_text(encoding="utf-8")
-            )
+            runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 runtime_state["context"]["runtime"]["latest_impl"]["node"], "implement_loop"
             )
             self.assertEqual(
                 runtime_state["context"]["runtime"]["latest_check"]["node"], "check"
             )
+
+    def test_run_workflow_uses_run_level_state_isolation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = self.write_workflow_config(
+                tmp_path,
+                project_root=tmp_path,
+                max_steps=1,
+                defaults={"spec": "s"},
+                start="n1",
+                nodes=[
+                    {
+                        "id": "n1",
+                        "prompt": "run once",
+                        "input_map": {"spec": "context.defaults.spec"},
+                        "on_success": "END",
+                        "on_failure": "END",
+                    }
+                ],
+            )
+
+            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
+                return {"pass": True, "node": node_id, "step": step}
+
+            with (
+                self.patch_yaml(),
+                patch.object(module, "run_codex_exec", side_effect=self.make_fake_codex_exec(payload_for_call)),
+            ):
+                summary1 = module.run_workflow(str(config_path), {})
+                summary2 = module.run_workflow(str(config_path), {})
+
+            state_root = tmp_path / ".codex-loop-state"
+            runs_root = state_root / "runs"
+            run_dirs = sorted([p for p in runs_root.iterdir() if p.is_dir()])
+            self.assertEqual(len(run_dirs), 2)
+            self.assertNotEqual(summary1["run_id"], summary2["run_id"])
+            self.assertEqual((state_root / "latest_run_id").read_text(encoding="utf-8").strip(), summary2["run_id"])
+
+            for run_dir in run_dirs:
+                self.assertTrue((run_dir / "history.jsonl").is_file())
+                lines = [line for line in (run_dir / "history.jsonl").read_text(encoding="utf-8").splitlines() if line]
+                self.assertEqual(len(lines), 1)
+                self.assertTrue((run_dir / "step001__n1__attempt01__meta.json").is_file())
+
+    def test_build_step_prefix_and_log_name_use_same_node_sanitization(self):
+        prefix = module.build_step_prefix(1, "node/a b", 2)
+        self.assertEqual(prefix, "step001__node_a_b__attempt02")
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = module.make_codex_log_path(Path(tmp), "node/a b", 1, 2)
+        self.assertIn("node_a_b", log_path.name)
 
     def test_run_workflow_collects_output_history_for_node(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -741,9 +856,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 summary = module.run_workflow(str(config_path), {})
 
             self.assertEqual(summary["status"], "completed")
-            runtime_state = json.loads(
-                (tmp_path / ".codex-loop-state" / "runtime_state.json").read_text(encoding="utf-8")
-            )
+            runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 runtime_state["context"]["runtime"]["review_history"],
                 [
@@ -787,9 +900,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
 
             self.assertEqual(summary["status"], "completed")
             self.assertEqual(len(captured_prompts), 1)
-            runtime_state = json.loads(
-                (tmp_path / ".codex-loop-state" / "runtime_state.json").read_text(encoding="utf-8")
-            )
+            runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 runtime_state["context"]["runtime"]["review_history"],
                 [{"pass": True, "issues": []}],

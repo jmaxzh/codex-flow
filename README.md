@@ -222,14 +222,17 @@ prompt: |
 
 默认写入 `run.state_dir`：
 
-- `logs/workflow__<timestamp>/`：每次 `codex exec` 的完整控制台日志
-- `stepXXX__<node>__attemptYY__raw.txt`：节点原始输出
-- `stepXXX__<node>__attemptYY__prompt.txt`：渲染后提示词
-- `stepXXX__<node>__attemptYY__parsed.json`：解析后 JSON
-- `stepXXX__<node>__attemptYY__meta.json`：step 元信息（step/node_id/attempt/next_node/applied_route_bindings 等）
-- `history.jsonl`：逐步执行历史
-- `runtime_state.json`：最近状态快照（包含 `context.defaults`/`context.runtime`、`outputs`、`attempt_counter`）
-- `run_summary.json`：最终汇总
+- `runs/<run_id>/`：单次执行的 run 级隔离目录（每次运行一个新目录）
+- `runs/<run_id>/logs/workflow__<timestamp>/`：该 run 内每次 `codex exec` 的完整控制台日志
+- `runs/<run_id>/stepXXX__<node>__attemptYY__raw.txt`：节点原始输出
+- `runs/<run_id>/stepXXX__<node>__attemptYY__prompt.txt`：渲染后提示词
+- `runs/<run_id>/stepXXX__<node>__attemptYY__parsed.json`：解析后 JSON
+- `runs/<run_id>/stepXXX__<node>__attemptYY__meta.json`：step 元信息（step/node_id/attempt/next_node/applied_route_bindings 等）
+- `runs/<run_id>/history.jsonl`：该 run 的逐步执行历史
+- `runs/<run_id>/runtime_state.json`：该 run 最近状态快照（包含 `context.defaults`/`context.runtime`、`outputs`、`attempt_counter`）
+- `runs/<run_id>/run_summary.json`：该 run 最终汇总
+- `latest_run_id`：最近一次 run 的 ID（文本）
+- `latest_run.json`：最近一次 run 的索引（包含 `run_id` 与 `run_state_dir`）
 
 ## 示例配置
 
