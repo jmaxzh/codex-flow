@@ -1,93 +1,257 @@
-# codex 自动闭环脚本（Fast-Fail / 极简字段）
+# Codex 配置驱动工作流编排（Prefect）
 
-`scripts/codex_automation_loops.py` 提供两个独立循环：
+`scripts/codex_automation_loops.py` 是通用编排引擎：
 
-1. `implement-loop`：实施 → 检查 → 继续实施
-2. `review-loop`：review → 修复 → review
+- 启动时通过 `--preset` 选择预设模板（必选）
+- 支持通过命令行注入并覆盖预设中的上下文默认值
+- 不再内置 `implement/review/check/fix` 固定阶段语义
+- 节点路由仅由 `pass` 与 `on_success/on_failure` 决定
+- 节点只写入 `outputs.<node_id>`；边上的 `route_bindings` 负责把结果绑定到运行时上下文供下游读取
+- 支持节点级 `collect_history_to`：将该节点每轮完整输出按顺序追加到 `context.runtime.*` 历史数组
 
-## 核心约束
-
-- 只接受 **严格 JSON** 输出。
-- 解析失败、缺字段、字段类型错误：**立即失败退出**（fast-fail）。
-- 不做 fallback、兼容解析、兜底。
-
-## 最小数据契约
-
-### 实现闭环（implement/check）
-
-- 检查步骤只输出：
-
-```json
-{"todo": ["item || reason"]}
-```
-
-- 含义：`todo` 同时覆盖“未完成项 + 偏差项”。
-- 结束条件：`{"todo":[]}`。
-
-### review/fix 闭环
-
-- review 步骤只输出：
-
-```json
-{"issues": ["..."]}
-```
-
-- 修复步骤接收 `issues` 列表。
-- 结束条件：`{"issues":[]}`。
-
-## 审查对象绑定
-
-`review-loop` 每轮直接审查目标项目当前工作区变更，不再通过 `scope.diff` 注入完整代码差异。
-
-## 提示词文件
-
-`prompts/` 下为独立模板：
-
-- `implement_initial.prompt.md`
-- `implement_continue.prompt.md`
-- `check.prompt.md`
-- `review.prompt.md`
-- `fix.prompt.md`
-
-## 用法
+## 运行方式
 
 ```bash
-# 实现闭环
-python3 scripts/codex_automation_loops.py implement-loop --project-root /path/to/target --spec docs/xxx.md
-python3 scripts/codex_automation_loops.py implement-loop --project-root /path/to/target --spec openspec/changes/xxx
-
-# 实现闭环（注入额外提示词）
-python3 scripts/codex_automation_loops.py implement-loop --project-root /path/to/target --spec docs/xxx.md \
-  --implement-extra-prompt "使用 skill openspec-apply-change，按 tasks.md 逐项实现"
-
-# review/fix 闭环
-python3 scripts/codex_automation_loops.py review-loop --project-root /path/to/target
-
-# review/fix 闭环（仅 review 阶段注入额外提示词）
-python3 scripts/codex_automation_loops.py review-loop --project-root /path/to/target \
-  --review-extra-prompt "根据 docs/repo/engineering/coding-evaluation-protocol.md review scripts/docs_guard"
-
-# 顺序执行两套闭环
-python3 scripts/codex_automation_loops.py all --project-root /path/to/target --spec docs/xxx.md \
-  --review-extra-prompt "根据 docs/repo/engineering/coding-evaluation-protocol.md review scripts/docs_guard"
+python3 scripts/codex_automation_loops.py --preset implement_loop
 ```
 
-可选参数：
-
-- `--project-root`（默认当前目录；所有 git/codex 在该目录执行）
-- `--state-dir`（默认 `.codex-loop-state`）
-- `--max-iterations`（默认 `20`）
-- `--prompt-dir`（默认脚本内置 `prompts/` 绝对路径；也可传相对 `project-root` 的路径）
-- `--implement-extra-prompt`（仅 `implement-loop` / `all`；注入到 `implement_initial.prompt.md` 的 `${implement_instruction}`。传入后会覆盖默认“根据 <spec> 实施。”）
-- `--review-extra-prompt`（仅 `review-loop` / `all`；注入到 `review.prompt.md` 的 `${review_scope_instruction}`。传入后会覆盖默认“请查看项目工作树中的所有代码变更。”）
-- `--spec`（仅 `implement-loop` / `all`；支持文件或目录，不做类型校验）
-
-## 固定执行命令
-
-脚本已固定调用本机 `codex` 的非交互模式：
+新增重构循环预设：
 
 ```bash
-codex exec --skip-git-repo-check --cd <project-root> --output-last-message <out-file> -
+python3 scripts/codex_automation_loops.py --preset refactor_loop
 ```
 
-提示词通过 stdin 传入，最终回答写入 `<out-file>`，并按严格 JSON 解析。
+新增 reviewer 循环预设（仅 `bug_reviwer`，由引擎收集每轮完整评审输出历史）：
+
+```bash
+python3 scripts/codex_automation_loops.py --preset reviewer_loop
+```
+
+新增文档 reviewer 循环预设（仅 `doc_reviwer`，聚焦文档改动质量）：
+
+```bash
+python3 scripts/codex_automation_loops.py --preset doc_reviewer_loop
+```
+
+`refactor_loop` 内的评审角色已命名为 `arch_reviwer`（与 `refactor` 迭代，不使用 fix 角色）。
+
+带上下文注入覆盖示例（可重复 `--context`）：
+
+```bash
+python3 scripts/codex_automation_loops.py \
+  --preset implement_loop \
+  --context spec docs/new-spec.md \
+  --context user_instruction "请先完成 API 层"
+```
+
+运行前请确保：
+
+1. 使用当前系统 `python3.13` 安装依赖（不创建虚拟环境）：
+
+   ```bash
+   python3.13 -m pip install --break-system-packages --user -r requirements.txt
+   ```
+
+2. `--preset` 必须是仓库内置预设标识符（对应 `presets/<id>.yaml`）
+3. `run.project_root` 指向有效项目目录
+
+## CLI 参数
+
+- `--preset <preset-id>`（必选）
+  - 仅接受扩展名省略的预设标识符（如 `implement_loop`）
+  - 由编排器固定解析到仓库 `presets/<preset-id>.yaml`，与当前工作目录无关
+  - 不接受路径形式（如 `presets/implement_loop.yaml`）与 `.yaml` 后缀（如 `implement_loop.yaml`）
+- `--context <key> <value>`（可选，可重复）
+  - 仅支持扁平键值注入
+  - `key` 不允许包含 `.`，不允许嵌套对象
+  - 同 key 出现多次时，后者覆盖前者
+
+### `--preset` 迁移说明（BREAKING）
+
+- 旧行为允许 `--preset` 传文件路径；新行为仅允许预设标识符
+- 旧写法 `--preset presets/implement_loop.yaml` 改为 `--preset implement_loop`
+- 旧写法 `--preset implement_loop.yaml` 改为 `--preset implement_loop`
+
+## 配置 DSL
+
+```yaml
+version: 1
+
+run:
+  project_root: /abs/path/to/target
+  state_dir: .codex-loop-state
+  max_steps: 50
+
+executor:
+  cmd: ["codex", "exec", "--skip-git-repo-check"]
+
+context:
+  defaults:
+    spec: "docs/xxx.md"
+    user_instruction: "根据 spec 进行首轮实现"
+
+workflow:
+  start: implement_first
+  nodes:
+    - id: implement_first
+      prompt: |
+        {{ prompt_file("./prompts/shared/implementer_role.md") }}
+        最后一行输出严格 JSON object（不要使用代码块），至少包含：
+        {
+          "pass": true/false,
+          "change_summary": "..."
+        }
+        首轮指令: {{ inputs.user_instruction }}
+        规格: {{ inputs.spec }}
+      input_map:
+        user_instruction: context.defaults.user_instruction
+        spec: context.defaults.spec
+      on_success: check
+      on_failure: END
+      route_bindings:
+        success:
+          context.runtime.latest_impl: outputs.implement_first
+
+    - id: check
+      prompt: |
+        {{ prompt_file("./prompts/shared/implementer_checker_role.md") }}
+        若全部完成，pass=true 且 todo 为空数组。
+        若未完成，pass=false 且 todo 给出剩余待办（字符串数组）。
+        最后一行输出严格 JSON object（不要使用代码块），至少包含：
+        {
+          "pass": true/false,
+          "verification": "...",
+          "todo": ["..."]
+        }
+        实现输出: {{ inputs.latest_impl }}
+      input_map:
+        latest_impl: context.runtime.latest_impl
+      collect_history_to: context.runtime.check_history
+      on_success: END
+      on_failure: implement_loop
+      route_bindings:
+        failure:
+          context.runtime.latest_check: outputs.check
+```
+
+`context.defaults` 是预设中的默认输入。运行时若传入 `--context key value`，会覆盖同名默认值；未注入的 key 继续使用预设默认值。
+
+## 固定输出潜规则
+
+每个节点的模型输出必须满足：
+
+1. 只解析输出的最后一个非空行（即最后一行有效内容）
+2. 该行必须是可解析的严格 JSON
+3. 顶层必须是 JSON object
+4. 必含 `pass` 字段
+5. `pass` 必须是 boolean
+
+## 路由规则
+
+- `pass=true` -> `on_success`
+- `pass=false` -> `on_failure`
+- `END` -> 结束流程
+- 示例默认采用显式 fail-fast：失败分支直接路由到 `END`
+
+可选 `route_bindings` 在边上执行，用于把来源值写入 `context.runtime.*`：
+
+```yaml
+route_bindings:
+  success:
+    context.runtime.latest_impl: outputs.implement_first
+  failure:
+    context.runtime.latest_check: outputs.check
+```
+
+可选 `collect_history_to` 在节点执行后追加历史，用于收集该节点每轮完整输出：
+
+```yaml
+collect_history_to: context.runtime.review_history
+```
+
+- 目标路径必须以 `context.runtime.` 开头
+- 路径不存在时自动初始化为 `[]`
+- 每轮 append 当前节点完整 JSON 输出（不去重，不改写原输出）
+
+## 输入映射规则
+
+`input_map` 只允许引用：
+
+- `context.defaults.*`
+- `context.runtime.*`
+- `outputs.*`
+
+`outputs.<node_id>` 始终是该节点完整 JSON 输出（原样透传）。
+`context.runtime.*` 由编排层通过 `route_bindings` 更新，不改变节点输出归属。
+
+## Prompt 模板与 `prompt_file(...)`
+
+节点 `prompt` 使用 Jinja2 统一渲染：`{{ inputs.* }}` 与 `{{ prompt_file("...") }}` 在同一渲染流程完成。
+
+- 语法：`{{ prompt_file("<relative_path>") }}`
+- 路径基准：相对当前 workflow 配置文件目录（不是 `cwd`，也不是 `run.project_root`）
+- 仅允许非空相对路径，拒绝绝对路径
+- 允许 `..`，按常规相对路径解析
+- include 文件按 UTF-8 读取
+- 建议普通用户始终使用字符串字面量相对路径
+- 建议组织方式：仅将可复用 role 文本拆分到文件；输出协议保留在节点 `prompt` 配置中
+
+最小示例（role include + 输出协议内联 + inputs 变量共存）：
+
+```yaml
+prompt: |
+  {{ prompt_file("./prompts/shared/implementer_role.md") }}
+  最后一行输出严格 JSON object（不要使用代码块），至少包含：
+  {
+    "pass": true/false,
+    "change_summary": "..."
+  }
+  首轮指令: {{ inputs.user_instruction }}
+  规格: {{ inputs.spec }}
+```
+
+固定边界（保持实现极简）：
+
+- 不支持旧语法兼容（如 `{{prompt_file:./x.md}}`）
+- 不做递归 include 检测
+- 不做 include 内容二次模板渲染（include 文件里的 `{{ ... }}` 按文本保留）
+- 不为动态/表达式路径参数提供兼容承诺
+- 不引入复杂路径安全策略（固定仓库根、symlink 越界防护等）
+
+如果需要在主模板里输出字面量 `{{ ... }}`，可使用 Jinja2 `raw` 块：
+
+```jinja
+{% raw %}{{ inputs.example }}{% endraw %}
+```
+
+旧语法手动迁移最小清单：
+
+1. 把 `{{prompt_file:./path/to/file.md}}` 替换为 `{{ prompt_file("./path/to/file.md") }}`
+2. 确认路径是“相对配置文件目录”的相对路径
+3. 确认 include 文件按 UTF-8 可读取
+4. 检查 include 文件中是否有 `{{ ... }}`，若有则按文本保留或挪回主模板处理
+
+## 状态与日志
+
+默认写入 `run.state_dir`：
+
+- `runs/<run_id>/`：单次执行的 run 级隔离目录（每次运行一个新目录）
+- `runs/<run_id>/logs/workflow__<timestamp>/`：该 run 内每次 `codex exec` 的完整控制台日志
+- `runs/<run_id>/stepXXX__<node>__attemptYY__raw.txt`：节点原始输出
+- `runs/<run_id>/stepXXX__<node>__attemptYY__prompt.txt`：渲染后提示词
+- `runs/<run_id>/stepXXX__<node>__attemptYY__parsed.json`：解析后 JSON
+- `runs/<run_id>/stepXXX__<node>__attemptYY__meta.json`：step 元信息（step/node_id/attempt/next_node/applied_route_bindings 等）
+- `runs/<run_id>/history.jsonl`：该 run 的逐步执行历史
+- `runs/<run_id>/runtime_state.json`：该 run 最近状态快照（包含 `context.defaults`/`context.runtime`、`outputs`、`attempt_counter`）
+- `runs/<run_id>/run_summary.json`：该 run 最终汇总
+- `latest_run_id`：最近一次 run 的 ID（文本）
+- `latest_run.json`：最近一次 run 的索引（包含 `run_id` 与 `run_state_dir`）
+
+## 示例配置
+
+仓库根目录提供了可直接改造的示例：
+
+- [presets/implement_loop.yaml](./presets/implement_loop.yaml)
+- [presets/refactor_loop.yaml](./presets/refactor_loop.yaml)
+- [presets/reviewer_loop.yaml](./presets/reviewer_loop.yaml)
+- [presets/doc_reviewer_loop.yaml](./presets/doc_reviewer_loop.yaml)

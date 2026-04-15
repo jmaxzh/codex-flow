@@ -1,0 +1,39 @@
+version: 1
+
+run:
+  project_root: .
+  state_dir: .codex-loop-state
+  max_steps: 50
+
+executor:
+  cmd: ["codex", "exec", "--skip-git-repo-check"]
+
+context:
+  defaults:
+    user_instruction: "请评审未提交文档改动，直到没有新增问题。"
+
+workflow:
+  start: doc_reviwer
+  nodes:
+    - id: doc_reviwer
+      prompt: |
+        用户指令: {{ inputs.user_instruction }}
+        历史评审输出: {{ inputs.doc_review_history }}
+
+        {{ prompt_file("./prompts/shared/doc_reviwer_role.md") }}
+
+        仅输出“本轮新增问题（含文档位置）”，不要重复历史中已发现的问题。
+        若无新增问题，请返回 pass=true 且 issues 为空数组。
+        最后一行输出严格 JSON object（不要使用代码块），至少包含：
+        {
+          "pass": true/false,
+          "verification": "...",
+          "issues": ["..."]
+        }
+      input_map:
+        user_instruction: context.defaults.user_instruction
+        doc_review_history: context.runtime.doc_review_history
+
+      collect_history_to: context.runtime.doc_review_history
+      on_success: END
+      on_failure: doc_reviwer
