@@ -235,6 +235,26 @@ class ConfigValidationTests(PatchedYamlMixin, unittest.TestCase):
             with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "parse_output_json"):
                 module.load_config(str(config_path), {})
 
+    def test_load_config_resolves_relative_project_root_from_launch_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            launch_cwd = tmp_path / "worktree"
+            launch_cwd.mkdir(parents=True, exist_ok=True)
+            project_dir = launch_cwd / "target-project"
+            project_dir.mkdir(parents=True, exist_ok=True)
+
+            payload = self._minimal_valid_config(project_root="./target-project")
+            config_path = self._write_config(tmp_path, payload)
+
+            with self.patch_yaml():
+                config = module.load_config(
+                    str(config_path),
+                    {},
+                    str(launch_cwd),
+                )
+
+            self.assertEqual(config["run"]["project_root"], str(project_dir.resolve()))
+
 
 class OutputContractTests(unittest.TestCase):
     def test_parse_and_validate_uses_last_non_empty_line(self):
@@ -706,6 +726,54 @@ class PromptPathResolutionWorkflowTests(PatchedYamlMixin, unittest.TestCase):
 
             self.assertEqual(len(prompts), 1)
             self.assertIn("CFG_DIR_CONTENT", prompts[0])
+
+    def test_run_workflow_passes_launch_cwd_to_load_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "configs" / "wf.yaml"
+            include = root / "configs" / "prompts" / "x.md"
+            project_root = root / "project"
+            include.parent.mkdir(parents=True, exist_ok=True)
+            project_root.mkdir(parents=True, exist_ok=True)
+            include.write_text("FROM_INCLUDE", encoding="utf-8")
+            self._write_workflow_config(config_path, project_root)
+
+            load_config_calls: list[str | None] = []
+            original_load_config = module.load_config
+
+            def wrapped_load_config(
+                config_path: str,
+                context_overrides: dict[str, str],
+                launch_cwd: str | None = None,
+            ) -> dict[str, object]:
+                load_config_calls.append(launch_cwd)
+                return original_load_config(config_path, context_overrides, launch_cwd)
+
+            def fake_codex_exec(
+                project_root: str,
+                executor_cmd: list[str],
+                prompt: str,
+                out_file: str,
+                task_log_dir: str,
+                node_id: str,
+                step: int,
+                attempt: int,
+            ) -> str:
+                Path(out_file).write_text('{"pass": true}', encoding="utf-8")
+                log_path = Path(task_log_dir) / "ok.log"
+                log_path.write_text("ok", encoding="utf-8")
+                return str(log_path)
+
+            launch_cwd = root / "caller-worktree"
+            launch_cwd.mkdir(parents=True, exist_ok=True)
+            with (
+                self.patch_yaml(),
+                patch.object(module, "load_config", side_effect=wrapped_load_config),
+                patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+            ):
+                module.run_workflow(str(config_path), {}, str(launch_cwd))
+
+            self.assertEqual(load_config_calls, [str(launch_cwd)])
 
 
 class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest.TestCase):

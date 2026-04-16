@@ -53,7 +53,7 @@ python3 scripts/codex_automation_loops.py \
    ```
 
 2. `--preset` 必须是仓库内置预设标识符（对应 `presets/<id>.yaml`）
-3. `run.project_root` 指向有效项目目录
+3. `run.project_root` 指向有效项目目录（相对路径以启动命令时的当前工作目录 `cwd` 为基准）
 
 ## CLI 参数
 
@@ -133,6 +133,11 @@ workflow:
         failure:
           context.runtime.latest_check: outputs.check
 ```
+
+`run.project_root` 路径解析规则：
+
+- 绝对路径：直接使用
+- 相对路径：相对于启动脚本时的当前工作目录（`cwd`）解析，不相对于预设文件目录
 
 `context.defaults` 是预设中的默认输入。运行时若传入 `--context key value`，会覆盖同名默认值；未注入的 key 继续使用预设默认值。
 

@@ -248,7 +248,11 @@ def parse_context_overrides(pairs: list[list[str]] | None) -> dict[str, str]:
 
 
 @task
-def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str, Any]:
+def load_config(
+    config_path: str,
+    context_overrides: dict[str, str],
+    launch_cwd: str | None = None,
+) -> dict[str, Any]:
     if YAML_IMPORT_ERROR is not None:
         raise RuntimeError(f"Missing dependency: pyyaml ({YAML_IMPORT_ERROR})")
     raw = yaml.safe_load(read_text(Path(config_path)))
@@ -263,7 +267,8 @@ def load_config(config_path: str, context_overrides: dict[str, str]) -> dict[str
     workflow_cfg = ensure_dict(raw.get("workflow"), "workflow")
 
     project_root_raw = ensure_string(run_cfg.get("project_root"), "run.project_root")
-    project_root = resolve_path(project_root_raw, Path(config_path).parent)
+    project_root_base = Path(launch_cwd).resolve() if launch_cwd else Path.cwd().resolve()
+    project_root = resolve_path(project_root_raw, project_root_base)
     if not project_root.is_dir():
         raise RuntimeError(f"run.project_root not found: {project_root}")
 
@@ -750,8 +755,12 @@ def persist_state_and_logs(
 
 
 @flow(name="codex_orchestrator")
-def run_workflow(config_path: str, context_overrides: dict[str, str]) -> dict[str, Any]:
-    config = load_config(config_path, context_overrides)
+def run_workflow(
+    config_path: str,
+    context_overrides: dict[str, str],
+    launch_cwd: str | None = None,
+) -> dict[str, Any]:
+    config = load_config(config_path, context_overrides, launch_cwd)
 
     run_cfg = config["run"]
     project_root = Path(run_cfg["project_root"])
@@ -902,7 +911,8 @@ def main() -> int:
         return 2
 
     try:
-        run_workflow(str(config_path), context_overrides)
+        launch_cwd = str(Path.cwd().resolve())
+        run_workflow(str(config_path), context_overrides, launch_cwd)
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 2
