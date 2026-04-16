@@ -1,56 +1,105 @@
-【任务边界】
-只关注“高价值、非重复、能明显提升代码质量”的优化项。
-若剩余优化项仅属于局部写法微调、风格统一、个人偏好或边际收益很低的细节优化，则停止输出。
-不要提出优化建议。
+**Refactor Pre-Review Compression Prompt**
 
-【目标】
-- 保持原有功能完全一致
-- 减少冗余代码
-- 降低嵌套复杂度
-- 提高可读性
-- 优先发现对整体结构最有帮助的问题，而不是局部可有可无的细节
+---
 
-【优化原则】
-1. 消除重复逻辑（DRY）
-2. 优先使用标准库 / 内置函数
-3. 用更简洁但不牺牲可读性的表达替代冗长结构
-4. 减少不必要的临时变量
-5. 简化条件判断，优先提前返回
-6. 避免不必要的循环与重复遍历
-7. 保持命名清晰、语义明确
-8. 优先指出“影响范围广、收益明显”的问题，忽略纯细节级优化
+Your task is **not exhaustive critique**, but to infer the **author’s primary refactor intent**, then output only **high-acceptance, high-ROI improvements**.
 
-【禁止】
-- 不要改变输入输出结构
-- 不要引入额外依赖（除非收益非常明确）
-- 不要过度拆分函数
-- 不要进行与“简化、重构”无关的扩展优化项
-- 不要重复表述相同观点
-- 不要输出“理论上可更优但实际收益很小”的优化项
-- 不要提出仅属于代码风格、个人偏好或极小幅可读性提升的优化
-- 不要为了凑条数而输出优化项
+---
 
-【优化项筛选标准】
-仅保留满足以下任一条件的优化项：
-- 能减少明显重复代码
-- 能显著降低理解成本或嵌套复杂度
-- 能消除不必要的数据处理、遍历或中间状态
-- 能让核心逻辑更直接、更稳定、更容易维护
+### 1. Infer Author Intent (priority heuristics)
 
-以下情况直接忽略：
-- 仅改写表达方式，但收益很小
-- 命名、排版、语序层面的轻微调整
-- 局部一两行可改可不改的“更优写法”
-- 不影响整体可读性和维护性的微优化
+From code signals, deduce likely goal:
 
-【输出要求】
-- 只输出“值得优化”的内容；没有明显问题时，明确说明“暂无明显可优化项”
-- 按“问题 -> 原因”格式输出
-- 按影响程度排序，最多输出 5 条，通常 3 条以内
-- 每条优化项必须具体，直接对应代码片段或结构
-- 结论要简洁，避免空泛表述
-- 不要输出大段重写代码，除非该片段确有必要
-- 不要连续给出语义重复、表述不同的优化项
+* Duplicate logic → **deduplication, branch convergence, lower maintenance cost**
+* Deep nesting / complex conditionals → **flatten control flow, improve readability**
+* Repeated traversal / redundant state → **streamline data pipeline, eliminate waste**
+* Already fine-grained functions → **optimize structure clarity, not further decomposition**
+* Conservative style → favor **low-risk, high-impact incremental changes**
 
-【停止条件】
-若高价值优化项已输出完毕，或剩余优化项都属于低收益微调，则立即停止，不再继续补充。
+If unclear, default to:
+**reduce duplication, complexity, and indirectness without behavior change**
+
+---
+
+### 2. Filter for Acceptable Suggestions
+
+Only include suggestions that:
+
+* Align with inferred intent
+* Preserve behavior, I/O, and external semantics
+* Have **bounded scope + low regression risk**
+* Provide **clear, practical benefit** (not theoretical)
+* Are **easy to adopt** (low cognitive overhead)
+
+Exclude:
+
+* Trivial syntax/style tweaks
+* Naming or formatting preferences
+* Large refactors with marginal gain
+* Abstraction for elegance alone
+* Over-decomposition increasing indirection
+* Vague or non-structural observations
+
+---
+
+### 3. Review Focus (high-value only)
+
+Evaluate:
+
+1. Deduplicable logic
+2. Excessive nesting → flattening opportunities
+3. Redundant state, traversal, or processing
+4. Structures obscuring core flow
+5. Patterns increasing long-term maintenance cost
+
+Ignore unrelated topics.
+
+---
+
+### 4. Output Selection Criteria
+
+Keep only items that:
+
+* Reduce duplication
+* Lower cognitive / structural complexity
+* Remove redundant processing or state
+* Make core logic more direct, stable, maintainable
+
+Ignore:
+
+* Minor rewrites with negligible gain
+* Micro-optimizations
+* Naming / formatting tweaks
+* Non-impactful local issues
+* Redundant points
+
+---
+
+### 5. Output Format
+
+#### (1) Likely Refactor Objective
+
+One sentence, concise.
+
+#### (2) Actionable Improvements
+
+Format: **Issue → Cause**
+Constraints:
+
+* Sorted by impact
+* ≤5 items (prefer ≤3)
+* Each maps to a concrete structure/pattern
+* No redundancy
+* No large code rewrites unless essential
+
+#### (3) Conclusion
+
+If no high-value, high-acceptance items:
+**No significant optimizations identified**
+
+---
+
+### 6. Stop Condition
+
+Stop once high-value items are exhausted.
+Do not include low-impact or stylistic refinements.

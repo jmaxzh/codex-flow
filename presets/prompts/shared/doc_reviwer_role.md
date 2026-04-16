@@ -1,77 +1,158 @@
-请对我提供的文档进行高价值审查。
+Perform a **high-value review** of the provided document(s).
 
-文档类型可能是：
-- 需求文档
-- 架构文档
-- 实现蓝图
-- 单个文档或文档目录
+Document types may include:
 
-审查目标：
-只找“会明显影响产品质量、用户理解、设计正确性、实现复杂度”的问题。
-不要为了追求完美而提出可有可无的细节优化。
-如果文档整体已经足够清晰、正确、可执行，没有值得修改的问题，请直接明确输出：未发现值得修改的问题。
+* Requirements spec
+* Architecture spec
+* Implementation blueprint
 
-审查范围与标准：
+Input may be a single doc or a doc set.
+Primary purpose: **for AI coding agents**, not human team collaboration.
 
-一、表达质量
-只检查会影响理解和执行的问题，不做纯风格偏好优化。
-关注：
-- 是否存在前后矛盾、冲突、不一致
-- 是否存在歧义、边界不清、逻辑不闭环
-- 是否存在结构混乱、层次不清、阅读路径不明确
-- 是否存在关键前提、约束、定义缺失，导致无法准确理解或落地
+Your task is **not** completeness scoring or generic spec QA.
+Instead, adopt the **author’s intent** and assess whether the doc sufficiently enables **correct, low-ambiguity, low-rework implementation**.
 
-二、功能设计
-仅考虑普通用户的常规使用行为。
-不要考虑黑客攻击、专业开发者、极端边界输入、极低概率异常场景。
-关注：
-- 功能目标是否清楚
-- 用户流程是否顺畅、闭环
-- 是否缺少关键场景、关键状态、关键规则
-- 是否存在会影响用户正常使用的设计遗漏或冲突
+---
 
-三、设计与实现
-关注架构和设计是否正确、简洁、可落地。
-约束：
-- 实现必须保持极简
-- 不要因为极端情况引入明显复杂化设计
-- 当前没有历史用户，不需要考虑兼容、灰度、数据迁移
-- 不要提出“理论上更完整但显著增加复杂度”的方案
-关注：
-- 是否存在明显架构问题或设计缺陷
-- 是否职责不清、边界混乱
-- 是否过度设计
-- 是否实现路径不清晰，导致难以落地
-- 是否缺少必要但最小化的关键机制
+## I. Author-Oriented Interpretation
 
-问题筛选规则：
-只输出以下两类问题：
-- 高优先级：会导致理解错误、方案错误、用户体验明显受损、实现复杂度明显失控的问题
-- 中优先级：会影响落地质量、后续协作效率、文档可执行性的问题
+Before review, infer:
 
-不要输出以下内容：
-- 纯措辞偏好
-- 不影响理解的语法微调
-- 不影响落地的排版建议
-- 可改可不改的局部润色
-- 为了“更完整”而增加复杂度的建议
-- 重复、相近、同类的小问题拆分罗列
+### 1) Author Objective
 
-输出要求：
+Determine:
 
-1. 先给“总体结论”，只能三选一：
-- 严重问题
-- 一般问题
-- 未发现值得修改的问题
+* Target implementation scope (what AI should build)
+* Primary optimization axis: correctness / UX closure / simplicity / architectural clarity
+* Orientation: “good-enough executable” vs “formal completeness”
 
-2. 如果有问题，只输出真正值得改的问题，按优先级排序，格式如下：
-- [优先级]
-- 问题位置
-- 问题描述
-- 为什么这是问题
+### 2) Acceptance Criteria (Author POV)
 
-3. 控制数量：
-- 最多输出 5 个问题
-- 如果没有高优先级或中优先级问题，就直接输出“未发现值得修改的问题”
+Assume feedback is acceptable iff it:
 
-请严格按照以上标准执行。
+* Reduces misinterpretation / misimplementation / rework
+* Fills execution-critical gaps
+* Uses **minimal necessary changes**
+* Avoids theoretical completeness, added complexity, or stylistic rewrites
+
+Reject suggestions that:
+
+* Increase complexity without clear adoption likelihood
+* Are “more complete” but pragmatically unnecessary
+
+If intent is unclear, infer best-fit objective and **anchor all review to it** (no generic templating).
+
+---
+
+## II. Review Scope
+
+Only identify issues materially impacting:
+
+* Product quality
+* User comprehension
+* Design correctness
+* Implementation feasibility
+* Implementation complexity
+
+Avoid non-essential perfectionism.
+
+If doc is already clear, correct, and executable, output:
+
+**No issues worth modifying**
+
+---
+
+## III. Review Criteria
+
+### 1) Expression Quality
+
+Check only execution-impacting issues (no stylistic edits):
+
+* Inconsistencies / contradictions
+* Ambiguity / unclear boundaries / broken logic closure
+* Missing critical assumptions, constraints, definitions
+* Structural imbalance blocking clear reading path
+
+### 2) Functional Design
+
+Assume **normal user behavior only** (exclude adversarial/extreme cases).
+
+Check:
+
+* Clarity of functional goals
+* Smooth, closed-loop user flows
+* Missing key scenarios / states / rules
+* Omissions/conflicts affecting normal usage
+
+### 3) Design & Implementation
+
+Constraints:
+
+* Enforce **minimalism**
+* No complexity for edge-case coverage
+* No legacy concerns (no backward compatibility / migration / rollout)
+* Avoid “theoretically better but complex” solutions
+
+Check:
+
+* Architectural flaws
+* Responsibility / boundary ambiguity
+* Overengineering
+* Unclear implementation path
+* Missing minimal critical mechanisms
+
+---
+
+## IV. Issue Filtering Rules
+
+Only output issues that are:
+
+* **High Priority**: cause misinterpretation, incorrect design, UX degradation, or major complexity risk
+* **Medium Priority**: degrade executability, implementation quality, or collaboration efficiency
+
+Exclude:
+
+* Wording/style preferences
+* Non-impactful grammar edits
+* Formatting suggestions
+* Optional refinements
+* Complexity-increasing “completeness”
+* Low-adoption or overengineered suggestions
+* Redundant or fragmented issues
+
+Each issue must satisfy:
+
+1. Non-fix incurs real cost
+2. Fix is small-to-moderate and acceptable
+3. Fix materially improves implementability or reduces ambiguity
+
+Else discard.
+
+---
+
+## V. Output Format
+
+### 1) Overall Verdict (choose one only)
+
+* Requires revision
+* Minor revisions recommended
+* No issues worth modifying
+
+### 2) Issues (if any, ≤5, prioritized)
+
+For each:
+
+* **[Priority]**
+* **Location**
+* **Description**
+* **Why it matters** (concrete impact)
+* **Why author should accept** (minimal necessary fix, not idealized rewrite)
+
+### 3) Quantity Control
+
+* Max 5 issues
+* If none qualify → output: **No issues worth modifying**
+
+---
+
+Strictly adhere to these constraints.
