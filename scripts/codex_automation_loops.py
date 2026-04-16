@@ -608,26 +608,45 @@ def run_codex_exec(
     return str(log_path)
 
 
+def extract_last_non_empty_line(raw_output: str) -> tuple[str, str]:
+    line_starts: list[int] = []
+    lines: list[str] = []
+    offset = 0
+    for line in raw_output.splitlines(keepends=True):
+        line_starts.append(offset)
+        lines.append(line)
+        offset += len(line)
+
+    if not lines and raw_output:
+        line_starts.append(0)
+        lines.append(raw_output)
+
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
+        line_without_eol = line.rstrip("\r\n")
+        if line_without_eol.strip() == "":
+            continue
+        return raw_output[: line_starts[index]], line_without_eol.strip()
+
+    raise RuntimeError("Output must end with a non-empty line containing JSON")
+
+
 @task
 def parse_and_validate_output(raw_output: str) -> tuple[dict[str, Any], bool]:
-    stripped_output = raw_output.rstrip()
-    if not stripped_output:
-        raise RuntimeError("Output must end with a non-empty line containing JSON")
-
-    last_line = stripped_output.splitlines()[-1].strip()
+    result_text, control_line = extract_last_non_empty_line(raw_output)
     try:
-        payload = json.loads(last_line)
+        control = json.loads(control_line)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Invalid JSON on last line: {exc}") from exc
 
-    if not isinstance(payload, dict):
+    if not isinstance(control, dict):
         raise RuntimeError("Last-line JSON must be an object")
-    if "pass" not in payload:
+    if "pass" not in control:
         raise RuntimeError("Last-line JSON must contain 'pass' field")
-    pass_flag = payload["pass"]
+    pass_flag = control["pass"]
     if not isinstance(pass_flag, bool):
         raise RuntimeError("Last-line JSON field 'pass' must be boolean")
-    return payload, pass_flag
+    return {"result": result_text, "control": control}, pass_flag
 
 
 @task

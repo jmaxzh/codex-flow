@@ -262,7 +262,27 @@ class OutputContractTests(unittest.TestCase):
             "本轮实现已完成。\n{\"pass\": true, \"change_summary\": \"ok\"}\n"
         )
         self.assertTrue(pass_flag)
-        self.assertEqual(payload["change_summary"], "ok")
+        self.assertEqual(payload["result"], "本轮实现已完成。\n")
+        self.assertEqual(payload["control"]["change_summary"], "ok")
+
+    def test_parse_and_validate_preserves_trailing_whitespace_in_result(self):
+        payload, pass_flag = module.parse_and_validate_output(
+            "结论文本末尾含空格   \n\n{\"pass\": true}\n"
+        )
+        self.assertTrue(pass_flag)
+        self.assertEqual(payload["result"], "结论文本末尾含空格   \n\n")
+
+    def test_parse_and_validate_preserves_whitespace_only_prefix(self):
+        payload, pass_flag = module.parse_and_validate_output(" \n\t\n{\"pass\": false}\n")
+        self.assertFalse(pass_flag)
+        self.assertEqual(payload["result"], " \n\t\n")
+        self.assertEqual(payload["control"], {"pass": False})
+
+    def test_parse_and_validate_supports_control_only_output(self):
+        payload, pass_flag = module.parse_and_validate_output('{"pass": true}')
+        self.assertTrue(pass_flag)
+        self.assertEqual(payload["result"], "")
+        self.assertEqual(payload["control"], {"pass": True})
 
     def test_parse_and_validate_fails_when_last_non_empty_line_not_json(self):
         with self.assertRaisesRegex(RuntimeError, "Invalid JSON on last line"):
@@ -275,6 +295,10 @@ class OutputContractTests(unittest.TestCase):
     def test_parse_and_validate_requires_boolean_pass(self):
         with self.assertRaisesRegex(RuntimeError, "must be boolean"):
             module.parse_and_validate_output('{"pass":"yes"}')
+
+    def test_parse_and_validate_requires_last_line_json_object(self):
+        with self.assertRaisesRegex(RuntimeError, "must be an object"):
+            module.parse_and_validate_output("[1,2,3]")
 
     def test_resolve_node_output_skips_json_parse_when_disabled(self):
         output, pass_flag = module.resolve_node_output("implementation done\nnotes\n", False)
@@ -328,47 +352,48 @@ class RoutingTests(unittest.TestCase):
         }
         runtime_state = {
             "context": {"defaults": {}, "runtime": {}},
-            "outputs": {"n1": {"pass": True}},
+            "outputs": {"n1": {"result": "", "control": {"pass": True}}},
         }
         with self.assertRaisesRegex(RuntimeError, "missing compiled route_bindings_parts"):
             module.apply_route_bindings(node, True, runtime_state)
 
 
 class DataPassthroughTests(unittest.TestCase):
-    def test_downstream_can_read_upstream_full_json(self):
+    def test_downstream_can_read_upstream_split_output(self):
         node = {
             "id": "implement",
             "input_map": {
-                "plan_output": "outputs.plan",
+                "plan_result": "outputs.plan.result",
+                "plan_control": "outputs.plan.control",
             },
             "input_map_parts": {
-                "plan_output": ("outputs", "plan"),
+                "plan_result": ("outputs", "plan", "result"),
+                "plan_control": ("outputs", "plan", "control"),
             },
         }
         runtime_state = {
             "context": {"defaults": {}, "runtime": {}},
             "outputs": {
                 "plan": {
-                    "pass": True,
-                    "plan_summary": "summary",
-                    "tasks": ["a", "b"],
-                    "nested": {"k": 1},
+                    "result": "结论 A\n",
+                    "control": {"pass": True, "plan_summary": "summary", "tasks": ["a", "b"]},
                 }
             },
         }
 
         prompt_inputs = module.build_prompt_inputs(node, runtime_state)
-        self.assertEqual(prompt_inputs["plan_output"], runtime_state["outputs"]["plan"])
+        self.assertEqual(prompt_inputs["plan_result"], runtime_state["outputs"]["plan"]["result"])
+        self.assertEqual(prompt_inputs["plan_control"], runtime_state["outputs"]["plan"]["control"])
 
         rendered = module.render_prompt(
-            "Plan: {{ inputs.plan_output }}",
+            "Plan: {{ inputs.plan_result }} | Control: {{ inputs.plan_control }}",
             prompt_inputs,
             str(ROOT / "presets" / "implement_loop.yaml"),
             "implement",
             "workflow.nodes[1].prompt",
         )
+        self.assertIn("Plan: 结论 A", rendered)
         self.assertIn('"plan_summary": "summary"', rendered)
-        self.assertIn('"nested": {', rendered)
 
     def test_downstream_can_read_runtime_context(self):
         node = {
@@ -395,7 +420,7 @@ class DataPassthroughTests(unittest.TestCase):
         }
         runtime_state = {
             "context": {"defaults": {}, "runtime": {}},
-            "outputs": {"plan": {"pass": True, "plan_summary": "summary"}},
+            "outputs": {"plan": {"result": "", "control": {"pass": True, "plan_summary": "summary"}}},
         }
 
         prompt_inputs = module.build_prompt_inputs(node, runtime_state)
@@ -408,7 +433,7 @@ class DataPassthroughTests(unittest.TestCase):
         }
         runtime_state = {
             "context": {"defaults": {}, "runtime": {}},
-            "outputs": {"plan": {"pass": True}},
+            "outputs": {"plan": {"result": "", "control": {"pass": True}}},
         }
         with self.assertRaisesRegex(RuntimeError, "missing compiled input_map_parts"):
             module.build_prompt_inputs(node, runtime_state)
@@ -791,6 +816,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                         "id": "implement_first",
                         "prompt": "implement_first",
                         "input_map": {"instruction": "context.defaults.user_instruction"},
+                        "parse_output_json": False,
                         "on_success": "check",
                         "on_failure": "END",
                         "route_bindings": {
@@ -804,13 +830,14 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                         "on_success": "END",
                         "on_failure": "implement_loop",
                         "route_bindings": {
-                            "failure": {"context.runtime.latest_check": "outputs.check"}
+                            "failure": {"context.runtime.latest_check": "outputs.check.control"}
                         },
                     },
                     {
                         "id": "implement_loop",
                         "prompt": "implement_loop",
                         "input_map": {"latest_check": "context.runtime.latest_check"},
+                        "parse_output_json": False,
                         "on_success": "check",
                         "on_failure": "END",
                         "route_bindings": {
@@ -844,10 +871,14 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             self.assertIn("implement_first", summary["outputs"])
             self.assertIn("implement_loop", summary["outputs"])
             self.assertIn("check", summary["outputs"])
+            self.assertIn("result", summary["outputs"]["check"])
+            self.assertIn("control", summary["outputs"]["check"])
+            self.assertEqual(summary["outputs"]["check"]["control"]["pass"], True)
 
             runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
+            self.assertIsInstance(runtime_state["context"]["runtime"]["latest_impl"], str)
             self.assertEqual(
-                runtime_state["context"]["runtime"]["latest_impl"]["node"], "implement_loop"
+                json.loads(runtime_state["context"]["runtime"]["latest_impl"])["node"], "implement_loop"
             )
             self.assertEqual(
                 runtime_state["context"]["runtime"]["latest_check"]["node"], "check"
@@ -954,6 +985,73 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             self.assertEqual(summary["outputs"]["implement"], "Implemented feature A.\nNo JSON line.")
             self.assertIn("Implemented feature A.", captured_prompts[1])
 
+    def test_run_workflow_plain_text_history_and_persisted_outputs_remain_strings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = self.write_workflow_config(
+                tmp_path,
+                project_root=tmp_path,
+                max_steps=1,
+                defaults={},
+                start="implement",
+                nodes=[
+                    {
+                        "id": "implement",
+                        "prompt": "implement",
+                        "input_map": {},
+                        "parse_output_json": False,
+                        "collect_history_to": "context.runtime.implement_history",
+                        "on_success": "END",
+                        "on_failure": "END",
+                    }
+                ],
+            )
+
+            def fake_codex_exec(
+                project_root: str,
+                executor_cmd: list[str],
+                prompt: str,
+                out_file: str,
+                task_log_dir: str,
+                node_id: str,
+                step: int,
+                attempt: int,
+            ) -> str:
+                Path(out_file).write_text("Implemented feature B.\nStill plain text.\n", encoding="utf-8")
+                log_path = Path(task_log_dir) / f"fake_{step}_{attempt}.log"
+                log_path.write_text("ok", encoding="utf-8")
+                return str(log_path)
+
+            with (
+                self.patch_yaml(),
+                patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+            ):
+                summary = module.run_workflow(str(config_path), {})
+
+            expected_output = "Implemented feature B.\nStill plain text."
+            self.assertEqual(summary["status"], "completed")
+            self.assertEqual(summary["outputs"]["implement"], expected_output)
+
+            runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
+            self.assertIsInstance(runtime_state["outputs"]["implement"], str)
+            self.assertEqual(runtime_state["outputs"]["implement"], expected_output)
+            self.assertEqual(runtime_state["context"]["runtime"]["implement_history"], [expected_output])
+            self.assertTrue(
+                all(isinstance(item, str) for item in runtime_state["context"]["runtime"]["implement_history"])
+            )
+
+            parsed_step = json.loads(
+                (Path(summary["run_state_dir"]) / "step001__implement__attempt01__parsed.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertIsInstance(parsed_step, str)
+            self.assertEqual(parsed_step, expected_output)
+
+            run_summary = json.loads((Path(summary["run_state_dir"]) / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertIsInstance(run_summary["outputs"]["implement"], str)
+            self.assertEqual(run_summary["outputs"]["implement"], expected_output)
+
     def test_build_step_prefix_and_log_name_use_same_node_sanitization(self):
         prefix = module.build_step_prefix(1, "node/a b", 2)
         self.assertEqual(prefix, "step001__node_a_b__attempt02")
@@ -973,16 +1071,18 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 nodes=[
                     {
                         "id": "review",
-                        "prompt": "review",
-                        "input_map": {},
+                        "prompt": "review {{ inputs.last_result }}",
+                        "input_map": {"last_result": "context.runtime.review_history"},
                         "collect_history_to": "context.runtime.review_history",
                         "on_success": "END",
                         "on_failure": "review",
                     }
                 ],
             )
+            captured_prompts: list[str] = []
 
             def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
+                captured_prompts.append(prompt)
                 payloads = [
                     {"pass": False, "issues": ["a"]},
                     {"pass": False, "issues": ["a", "b"]},
@@ -1001,11 +1101,18 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             self.assertEqual(
                 runtime_state["context"]["runtime"]["review_history"],
                 [
-                    {"pass": False, "issues": ["a"]},
-                    {"pass": False, "issues": ["a", "b"]},
-                    {"pass": True, "issues": []},
+                    {"result": "", "control": {"pass": False, "issues": ["a"]}},
+                    {"result": "", "control": {"pass": False, "issues": ["a", "b"]}},
+                    {"result": "", "control": {"pass": True, "issues": []}},
                 ],
             )
+            self.assertIn('"result": ""', captured_prompts[1])
+            parsed_step_3 = json.loads(
+                (Path(summary["run_state_dir"]) / "step003__review__attempt03__parsed.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(parsed_step_3, {"result": "", "control": {"pass": True, "issues": []}})
 
     def test_run_workflow_initializes_history_before_first_prompt_input(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1044,8 +1151,114 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 runtime_state["context"]["runtime"]["review_history"],
-                [{"pass": True, "issues": []}],
+                [{"result": "", "control": {"pass": True, "issues": []}}],
             )
+
+    def test_run_workflow_parse_output_json_failure_stops_without_on_failure_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = self.write_workflow_config(
+                tmp_path,
+                project_root=tmp_path,
+                max_steps=3,
+                defaults={},
+                start="review",
+                nodes=[
+                    {
+                        "id": "review",
+                        "prompt": "review",
+                        "input_map": {},
+                        "on_success": "END",
+                        "on_failure": "fix",
+                    },
+                    {
+                        "id": "fix",
+                        "prompt": "fix",
+                        "input_map": {},
+                        "on_success": "END",
+                        "on_failure": "END",
+                    },
+                ],
+            )
+            called_nodes: list[str] = []
+
+            def fake_codex_exec(
+                project_root: str,
+                executor_cmd: list[str],
+                prompt: str,
+                out_file: str,
+                task_log_dir: str,
+                node_id: str,
+                step: int,
+                attempt: int,
+            ) -> str:
+                called_nodes.append(node_id)
+                Path(out_file).write_text("NOT_JSON", encoding="utf-8")
+                log_path = Path(task_log_dir) / f"fake_{step}_{attempt}.log"
+                log_path.write_text("ok", encoding="utf-8")
+                return str(log_path)
+
+            with (
+                self.patch_yaml(),
+                patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+                self.assertRaisesRegex(RuntimeError, "Invalid JSON on last line"),
+            ):
+                module.run_workflow(str(config_path), {})
+
+            self.assertEqual(called_nodes, ["review"])
+
+    def test_run_workflow_route_binding_supports_control_and_result_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = self.write_workflow_config(
+                tmp_path,
+                project_root=tmp_path,
+                max_steps=2,
+                defaults={},
+                start="check",
+                nodes=[
+                    {
+                        "id": "check",
+                        "prompt": "check",
+                        "input_map": {},
+                        "on_success": "END",
+                        "on_failure": "END",
+                        "route_bindings": {
+                            "success": {
+                                "context.runtime.latest_check_control": "outputs.check.control",
+                                "context.runtime.latest_check_result": "outputs.check.result",
+                            }
+                        },
+                    }
+                ],
+            )
+
+            def fake_codex_exec(
+                project_root: str,
+                executor_cmd: list[str],
+                prompt: str,
+                out_file: str,
+                task_log_dir: str,
+                node_id: str,
+                step: int,
+                attempt: int,
+            ) -> str:
+                Path(out_file).write_text("已检查完成\n{\"pass\": true, \"issues\": []}\n", encoding="utf-8")
+                log_path = Path(task_log_dir) / f"fake_{step}_{attempt}.log"
+                log_path.write_text("ok", encoding="utf-8")
+                return str(log_path)
+
+            with (
+                self.patch_yaml(),
+                patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+            ):
+                summary = module.run_workflow(str(config_path), {})
+
+            runtime_state = json.loads(
+                (Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(runtime_state["context"]["runtime"]["latest_check_control"], {"pass": True, "issues": []})
+            self.assertEqual(runtime_state["context"]["runtime"]["latest_check_result"], "已检查完成\n")
 
 
 class MaxStepsTests(PatchedYamlMixin, unittest.TestCase):
@@ -1131,7 +1344,7 @@ class BuiltinPresetWiringTests(unittest.TestCase):
         self.assertTrue(nodes["check"]["parse_output_json"])
         self.assertEqual(
             nodes["check"]["route_bindings"]["failure"]["context.runtime.latest_check"],
-            "outputs.check",
+            "outputs.check.control",
         )
 
     def test_refactor_loop_uses_arch_reviwer_and_refactor_only(self):

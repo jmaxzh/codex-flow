@@ -146,7 +146,7 @@ For each:
 * **Location**
 * **Description**
 * **Why it matters** (concrete impact)
-* **Why author should accept** (minimal necessary fix, not idealized rewrite)
+* **Why author should accept** (why minimal fix, not ideal rewrite; no fix details)
 
 ### 3) Quantity Control
 

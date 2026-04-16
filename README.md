@@ -6,7 +6,8 @@
 - 支持通过命令行注入并覆盖预设中的上下文默认值
 - 不再内置 `implement/review/check/fix` 固定阶段语义
 - 节点路由仅由 `pass` 与 `on_success/on_failure` 决定
-- 节点只写入 `outputs.<node_id>`；边上的 `route_bindings` 负责把结果绑定到运行时上下文供下游读取
+- 节点只写入 `outputs.<node_id>`；`parse_output_json=true` 时为 `{result, control}`，`parse_output_json=false` 时为字符串
+- 边上的 `route_bindings` 负责把结果绑定到运行时上下文供下游读取
 - 支持节点级 `collect_history_to`：将该节点每轮完整输出按顺序追加到 `context.runtime.*` 历史数组
 
 ## 运行方式
@@ -131,7 +132,7 @@ workflow:
       on_failure: implement_loop
       route_bindings:
         failure:
-          context.runtime.latest_check: outputs.check
+          context.runtime.latest_check: outputs.check.control
 ```
 
 `run.project_root` 路径解析规则：
@@ -141,15 +142,17 @@ workflow:
 
 `context.defaults` 是预设中的默认输入。运行时若传入 `--context key value`，会覆盖同名默认值；未注入的 key 继续使用预设默认值。
 
-## 固定输出潜规则
+## 固定输出契约
 
-每个节点的模型输出必须满足：
-
-1. 只解析输出的最后一个非空行（即最后一行有效内容）
-2. 该行必须是可解析的严格 JSON
-3. 顶层必须是 JSON object
-4. 必含 `pass` 字段
-5. `pass` 必须是 boolean
+- `parse_output_json=true` 时：
+  1. 只解析输出的最后一个非空行（即最后一行有效内容）
+  2. 该行必须是可解析的严格 JSON，且顶层必须是 JSON object
+  3. 必含 `pass` 字段，且 `pass` 必须是 boolean
+  4. 节点输出写入 `outputs.<node_id>`，形态为：
+     - `outputs.<node_id>.result`：控制 JSON 行之前的完整原始文本
+     - `outputs.<node_id>.control`：最后一个非空行解析出的 JSON object
+- `parse_output_json=false` 时：
+  - 节点输出保持字符串，写入 `outputs.<node_id>`
 
 ## 路由规则
 
@@ -165,7 +168,7 @@ route_bindings:
   success:
     context.runtime.latest_impl: outputs.implement_first
   failure:
-    context.runtime.latest_check: outputs.check
+    context.runtime.latest_check: outputs.check.control
 ```
 
 可选 `collect_history_to` 在节点执行后追加历史，用于收集该节点每轮完整输出：
@@ -176,7 +179,9 @@ collect_history_to: context.runtime.review_history
 
 - 目标路径必须以 `context.runtime.` 开头
 - 路径不存在时自动初始化为 `[]`
-- 每轮 append 当前节点完整 JSON 输出（不去重，不改写原输出）
+- 每轮 append 当前节点完整输出（不去重，不改写原输出）
+- 当 `parse_output_json=true` 时，append 项为 `{result, control}`
+- 当 `parse_output_json=false` 时，append 项为字符串
 
 ## 输入映射规则
 
@@ -186,8 +191,32 @@ collect_history_to: context.runtime.review_history
 - `context.runtime.*`
 - `outputs.*`
 
-`outputs.<node_id>` 始终是该节点完整 JSON 输出（原样透传）。
+`outputs.<node_id>` 输出形态取决于节点配置：
+
+- `parse_output_json=true`：`outputs.<node_id>` 为 `{result, control}`
+- `parse_output_json=false`：`outputs.<node_id>` 为字符串
+
+推荐按语义读取：
+
+- 业务正文：`outputs.<node_id>.result`
+- 控制信号：`outputs.<node_id>.control`
+
 `context.runtime.*` 由编排层通过 `route_bindings` 更新，不改变节点输出归属。
+
+## 输出路径迁移（BREAKING）
+
+旧配置若把 `outputs.<node_id>` 当“控制 JSON 对象”使用，需要迁移到 `.control`；若要读取正文，改为 `.result`。
+
+旧/新路径对照：
+
+- 旧：`outputs.check`
+- 新（控制）：`outputs.check.control`
+- 新（正文）：`outputs.check.result`
+
+`collect_history_to` 条目形态也有变更（仅 `parse_output_json=true` 节点）：
+
+- 旧：每轮直接 append 控制对象（例如 `{"pass": false, "issues": ["a"]}`）
+- 新：每轮 append 完整封装对象（例如 `{"result": "本轮发现问题...", "control": {"pass": false, "issues": ["a"]}}`）
 
 ## Prompt 模板与 `prompt_file(...)`
 
