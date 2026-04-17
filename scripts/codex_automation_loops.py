@@ -7,47 +7,79 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, cast, overload
 
-try:
-    from prefect import flow, task
-except Exception as exc:  # pragma: no cover - runtime dependency guard
-    PREFECT_IMPORT_ERROR = exc
 
-    def _identity_decorator(*args: Any, **_kwargs: Any):  # type: ignore[misc]
-        if len(args) == 1 and callable(args[0]):
-            return args[0]
+@overload
+def _identity_decorator[**P, R](func: Callable[P, R]) -> Callable[P, R]: ...
 
-        def _wrap(func):
-            return func
+
+@overload
+def _identity_decorator[**P, R](*, name: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+
+def _identity_decorator[**P, R](func: Callable[P, R] | None = None, **_kwargs: Any) -> Any:
+    if func is None:
+
+        def _wrap(inner: Callable[P, R]) -> Callable[P, R]:
+            return inner
 
         return _wrap
+    return func
 
-    flow = _identity_decorator  # type: ignore[assignment]
-    task = _identity_decorator  # type: ignore[assignment]
+
+class _DecoratorLike(Protocol):
+    @overload
+    def __call__[**P, R](self, __fn: Callable[P, R], /) -> Callable[P, R]: ...
+
+    @overload
+    def __call__[**P, R](self, *args: Any, **kwargs: Any) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+
+if TYPE_CHECKING:
+    flow: _DecoratorLike = _identity_decorator
+    task: _DecoratorLike = _identity_decorator
+    PREFECT_IMPORT_ERROR: Exception | None = None
 else:
-    PREFECT_IMPORT_ERROR = None
+    _prefect_import_error: Exception | None = None
+    try:
+        from prefect import flow as _flow_impl
+        from prefect import task as _task_impl
+    except Exception as exc:  # pragma: no cover - runtime dependency guard
+        _prefect_import_error = exc
+        _flow_impl = _identity_decorator
+        _task_impl = _identity_decorator
 
+    flow = cast(_DecoratorLike, _flow_impl)
+    task = cast(_DecoratorLike, _task_impl)
+    PREFECT_IMPORT_ERROR = _prefect_import_error
+
+_yaml_import_error: Exception | None = None
 try:
-    import yaml
+    import yaml as _yaml_impl
 except Exception as exc:  # pragma: no cover - runtime dependency guard
-    YAML_IMPORT_ERROR = exc
-    yaml = None  # type: ignore[assignment]
-else:
-    YAML_IMPORT_ERROR = None
+    _yaml_import_error = exc
+    _yaml_impl = None
+yaml = _yaml_impl
+YAML_IMPORT_ERROR = _yaml_import_error
 
+_jinja_import_error: Exception | None = None
 try:
-    from jinja2 import Environment, StrictUndefined
-    from jinja2.runtime import Undefined
+    from jinja2 import Environment as _Environment
+    from jinja2 import StrictUndefined as _StrictUndefined
+    from jinja2.runtime import Undefined as _Undefined
 except Exception as exc:  # pragma: no cover - runtime dependency guard
-    JINJA_IMPORT_ERROR = exc
-    Environment = None  # type: ignore[assignment]
-    StrictUndefined = None  # type: ignore[assignment]
-    Undefined = object  # type: ignore[assignment,misc]
-else:
-    JINJA_IMPORT_ERROR = None
+    _jinja_import_error = exc
+    _Environment = None
+    _StrictUndefined = None
+    _Undefined = object
+Environment = _Environment
+StrictUndefined = _StrictUndefined
+Undefined = _Undefined
+JINJA_IMPORT_ERROR = _jinja_import_error
 
 
 PRESETS_DIR = "presets"
@@ -107,7 +139,7 @@ def make_codex_log_path(task_log_dir: Path, node_id: str, step: int, attempt: in
 def ensure_dict(value: Any, field_name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"'{field_name}' must be object")
-    return value
+    return cast(dict[str, Any], value)
 
 
 def ensure_string(value: Any, field_name: str) -> str:
@@ -117,9 +149,15 @@ def ensure_string(value: Any, field_name: str) -> str:
 
 
 def ensure_string_list(value: Any, field_name: str) -> list[str]:
-    if not isinstance(value, list) or not value or not all(isinstance(x, str) and x for x in value):
+    if not isinstance(value, list) or not value:
         raise RuntimeError(f"'{field_name}' must be non-empty string array")
-    return value
+    raw_items = cast(list[Any], value)
+    items: list[str] = []
+    for item in raw_items:
+        if not isinstance(item, str) or not item:
+            raise RuntimeError(f"'{field_name}' must be non-empty string array")
+        items.append(item)
+    return items
 
 
 def ensure_bool(value: Any, field_name: str) -> bool:
@@ -131,7 +169,7 @@ def ensure_bool(value: Any, field_name: str) -> bool:
 def ensure_flat_context_map(value: Any, field_name: str) -> dict[str, Any]:
     data = ensure_dict(value, field_name)
     for key, item in data.items():
-        if not isinstance(key, str) or not key:
+        if not key:
             raise RuntimeError(f"'{field_name}' keys must be non-empty strings")
         if "." in key:
             raise RuntimeError(f"'{field_name}' key '{key}' cannot contain '.'")
@@ -148,16 +186,14 @@ def ensure_optional_dict(value: Any, field_name: str) -> dict[str, Any]:
 
 def ensure_string_map(value: Any, field_name: str) -> dict[str, str]:
     data = ensure_dict(value, field_name)
-    if not all(isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+    if not all(isinstance(v, str) for v in data.values()):
         raise RuntimeError(f"{field_name} must be string->string map")
-    return data
+    return cast(dict[str, str], data)
 
 
 def validate_source_path(path_value: str, field_name: str) -> None:
     if not any(path_value.startswith(prefix) for prefix in ALLOWED_SOURCE_PREFIXES):
-        raise RuntimeError(
-            f"'{field_name}' must start with context.defaults. or context.runtime. or outputs."
-        )
+        raise RuntimeError(f"'{field_name}' must start with context.defaults. or context.runtime. or outputs.")
 
 
 def parse_dotted_path(path_value: str, field_name: str) -> tuple[str, ...]:
@@ -177,9 +213,7 @@ def compile_source_binding(source_path: str, field_name: str) -> dict[str, Any]:
 
 def compile_runtime_target(target_path: str, field_name: str) -> dict[str, Any]:
     if not target_path.startswith(ROUTE_BINDING_TARGET_PREFIX):
-        raise RuntimeError(
-            f"{field_name} must start with {ROUTE_BINDING_TARGET_PREFIX}"
-        )
+        raise RuntimeError(f"{field_name} must start with {ROUTE_BINDING_TARGET_PREFIX}")
     return {
         "target": target_path,
         "target_parts": parse_dotted_path(target_path, field_name),
@@ -194,9 +228,12 @@ def format_sorted_keys(keys: set[Any]) -> str:
 def resolve_dotted_parts(data: dict[str, Any], path_parts: tuple[str, ...], dotted_path: str) -> Any:
     current: Any = data
     for part in path_parts:
-        if not isinstance(current, dict) or part not in current:
+        if not isinstance(current, dict):
             raise RuntimeError(f"Path not found: {dotted_path}")
-        current = current[part]
+        current_obj = cast(dict[str, Any], current)
+        if part not in current_obj:
+            raise RuntimeError(f"Path not found: {dotted_path}")
+        current = current_obj[part]
     return current
 
 
@@ -226,11 +263,7 @@ def get_builtin_presets_dir() -> Path:
 def list_builtin_preset_identifiers(presets_dir: Path) -> list[str]:
     if not presets_dir.is_dir():
         return []
-    return sorted(
-        entry.stem
-        for entry in presets_dir.iterdir()
-        if entry.is_file() and entry.name.endswith(PRESET_FILE_SUFFIX)
-    )
+    return sorted(entry.stem for entry in presets_dir.iterdir() if entry.is_file() and entry.name.endswith(PRESET_FILE_SUFFIX))
 
 
 def format_available_presets(preset_ids: list[str]) -> str:
@@ -252,8 +285,7 @@ def validate_preset_identifier(preset_value: str) -> str:
     if preset_id.lower().endswith(PRESET_FILE_SUFFIX):
         migration_target = preset_id[: -len(PRESET_FILE_SUFFIX)] or "<preset-id>"
         raise RuntimeError(
-            "--preset accepts extensionless preset identifiers. "
-            f"Use '{migration_target}' instead of '{preset_id}'."
+            f"--preset accepts extensionless preset identifiers. Use '{migration_target}' instead of '{preset_id}'."
         )
     return preset_id
 
@@ -265,9 +297,7 @@ def resolve_preset_path(preset_value: str) -> Path:
     if not preset_path.is_file():
         available = format_available_presets(list_builtin_preset_identifiers(presets_dir))
         raise RuntimeError(
-            f"Unknown preset identifier: '{preset_id}'. "
-            f"Available built-in presets: {available}. "
-            f"Lookup directory: {presets_dir}"
+            f"Unknown preset identifier: '{preset_id}'. Available built-in presets: {available}. Lookup directory: {presets_dir}"
         )
     return preset_path
 
@@ -368,17 +398,16 @@ def compile_route_bindings(
 ) -> dict[str, list[dict[str, Any]]]:
     if not isinstance(route_bindings_raw, dict):
         raise RuntimeError(f"{node_field_prefix}.route_bindings must be object")
+    route_bindings_map = cast(dict[str, Any], route_bindings_raw)
 
-    unknown_routes = set(route_bindings_raw.keys()) - {"success", "failure"}
+    unknown_routes = set(route_bindings_map) - {"success", "failure"}
     if unknown_routes:
         bad = format_sorted_keys(unknown_routes)
-        raise RuntimeError(
-            f"{node_field_prefix}.route_bindings has unsupported keys: {bad} (allowed: success,failure)"
-        )
+        raise RuntimeError(f"{node_field_prefix}.route_bindings has unsupported keys: {bad} (allowed: success,failure)")
 
     compiled_bindings: dict[str, list[dict[str, Any]]] = {}
     for route_name in ("success", "failure"):
-        route_map_raw = route_bindings_raw.get(route_name, {})
+        route_map_raw = route_bindings_map.get(route_name, {})
         route_map_raw = ensure_string_map(
             route_map_raw,
             f"{node_field_prefix}.route_bindings.{route_name}",
@@ -400,7 +429,7 @@ def compile_route_bindings(
 
 
 def normalize_route_bindings(
-    compiled_bindings: dict[str, list[dict[str, Any]]]
+    compiled_bindings: dict[str, list[dict[str, Any]]],
 ) -> dict[str, dict[str, str]]:
     return {
         route_name: {binding["target"]: binding["source"] for binding in bindings}
@@ -452,16 +481,14 @@ def validate_workflow_transitions(nodes: list[dict[str, Any]], node_ids: set[str
         for route_key in ("on_success", "on_failure"):
             target = node[route_key]
             if target != END_NODE and target not in node_ids:
-                raise RuntimeError(
-                    f"Node '{node['id']}' has invalid {route_key}: {target} (must be existing node or END)"
-                )
+                raise RuntimeError(f"Node '{node['id']}' has invalid {route_key}: {target} (must be existing node or END)")
 
 
 def get_node_compiled(node: dict[str, Any]) -> dict[str, Any]:
     compiled = node.get("compiled")
     if not isinstance(compiled, dict):
         raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled config")
-    return compiled
+    return cast(dict[str, Any], compiled)
 
 
 def get_compiled_input_bindings(node: dict[str, Any]) -> list[dict[str, Any]]:
@@ -469,7 +496,7 @@ def get_compiled_input_bindings(node: dict[str, Any]) -> list[dict[str, Any]]:
     bindings = compiled.get("input_bindings")
     if not isinstance(bindings, list):
         raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled input_bindings")
-    return bindings
+    return cast(list[dict[str, Any]], bindings)
 
 
 def get_compiled_history_target(node: dict[str, Any]) -> dict[str, Any] | None:
@@ -478,7 +505,7 @@ def get_compiled_history_target(node: dict[str, Any]) -> dict[str, Any] | None:
         raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled collect_history_target")
     target = compiled["collect_history_target"]
     if target is None or isinstance(target, dict):
-        return target
+        return cast(dict[str, Any] | None, target)
     raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' has invalid compiled collect_history_target")
 
 
@@ -487,10 +514,10 @@ def get_compiled_route_bindings(node: dict[str, Any], route_name: str) -> list[d
     compiled_routes = compiled.get("route_bindings")
     if not isinstance(compiled_routes, dict):
         raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled route_bindings")
-    bindings = compiled_routes.get(route_name)
+    bindings = cast(dict[str, Any], compiled_routes).get(route_name)
     if not isinstance(bindings, list):
         raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled route_bindings.{route_name}")
-    return bindings
+    return cast(list[dict[str, Any]], bindings)
 
 
 @task
@@ -499,31 +526,33 @@ def load_config(
     context_overrides: dict[str, str],
     launch_cwd: str | None = None,
 ) -> dict[str, Any]:
-    if YAML_IMPORT_ERROR is not None:
+    if YAML_IMPORT_ERROR is not None or yaml is None:
         raise RuntimeError(f"Missing dependency: pyyaml ({YAML_IMPORT_ERROR})")
     raw = yaml.safe_load(read_text(Path(config_path)))
     if not isinstance(raw, dict):
         raise RuntimeError("Config root must be object")
+    raw_obj = cast(dict[str, Any], raw)
 
-    version = raw.get("version")
+    version = raw_obj.get("version")
     if version != 1:
         raise RuntimeError("Config 'version' must be 1")
 
-    run_cfg = parse_run_config(ensure_dict(raw.get("run"), "run"), launch_cwd)
-    executor_cfg = parse_executor_config(parse_optional_section(raw, "executor"))
+    run_cfg = parse_run_config(ensure_dict(raw_obj.get("run"), "run"), launch_cwd)
+    executor_cfg = parse_executor_config(parse_optional_section(raw_obj, "executor"))
     context_defaults = parse_context_defaults(
-        parse_optional_section(raw, "context"),
+        parse_optional_section(raw_obj, "context"),
         context_overrides,
     )
-    workflow_cfg = ensure_dict(raw.get("workflow"), "workflow")
+    workflow_cfg = ensure_dict(raw_obj.get("workflow"), "workflow")
     start_node = ensure_string(workflow_cfg.get("start"), "workflow.start")
     nodes_raw = workflow_cfg.get("nodes")
     if not isinstance(nodes_raw, list) or not nodes_raw:
         raise RuntimeError("workflow.nodes must be non-empty array")
+    nodes_raw_list = cast(list[Any], nodes_raw)
 
     nodes: list[dict[str, Any]] = []
     node_ids: set[str] = set()
-    for idx, node_raw in enumerate(nodes_raw, start=1):
+    for idx, node_raw in enumerate(nodes_raw_list, start=1):
         compiled_node = compile_workflow_node(node_raw, idx)
         node_id = compiled_node["id"]
         if node_id in node_ids:
@@ -569,25 +598,36 @@ class PromptInputsProxy(dict[str, Any]):
 
     def __getattribute__(self, name: str) -> Any:
         if name.startswith("_"):
-            return dict.__getattribute__(self, name)
-        if dict.__contains__(self, name):
-            return dict.__getitem__(self, name)
-        raise AttributeError(name)
+            return object.__getattribute__(self, name)
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
 
 
 def to_plain_prompt_value(value: Any) -> Any:
     if isinstance(value, PromptInputsProxy):
-        return {k: to_plain_prompt_value(v) for k, v in dict.items(value)}
+        plain: dict[str, Any] = {}
+        for key in value:
+            plain[key] = to_plain_prompt_value(value[key])
+        return plain
     if isinstance(value, list):
-        return [to_plain_prompt_value(v) for v in value]
+        plain_list: list[Any] = []
+        for item in cast(list[Any], value):
+            plain_list.append(to_plain_prompt_value(item))
+        return plain_list
     return value
 
 
 def to_prompt_inputs_proxy(value: Any) -> Any:
     if isinstance(value, dict):
-        return PromptInputsProxy({k: to_prompt_inputs_proxy(v) for k, v in value.items()})
+        value_dict = cast(dict[str, Any], value)
+        return PromptInputsProxy({k: to_prompt_inputs_proxy(v) for k, v in value_dict.items()})
     if isinstance(value, list):
-        return [to_prompt_inputs_proxy(v) for v in value]
+        proxied_list: list[Any] = []
+        for item in cast(list[Any], value):
+            proxied_list.append(to_prompt_inputs_proxy(item))
+        return proxied_list
     return value
 
 
@@ -609,7 +649,7 @@ def render_prompt(
     node_id: str,
     prompt_field: str,
 ) -> str:
-    if JINJA_IMPORT_ERROR is not None:
+    if JINJA_IMPORT_ERROR is not None or Environment is None or StrictUndefined is None:
         raise RuntimeError(f"Missing dependency: jinja2 ({JINJA_IMPORT_ERROR})")
 
     config_dir = Path(config_path).resolve().parent
@@ -624,14 +664,10 @@ def render_prompt(
 
     def prompt_file(path_value: Any) -> str:
         if not isinstance(path_value, str):
-            raise RuntimeError(
-                f"prompt_file(path) expects string path, got {type(path_value).__name__}"
-            )
+            raise RuntimeError(f"prompt_file(path) expects string path, got {type(path_value).__name__}")
         include_raw = path_value.strip()
         if not include_raw:
-            raise RuntimeError(
-                "prompt_file(path) expects non-empty relative path, got empty string"
-            )
+            raise RuntimeError("prompt_file(path) expects non-empty relative path, got empty string")
 
         path_obj = Path(include_raw).expanduser()
         if path_obj.is_absolute():
@@ -645,18 +681,16 @@ def render_prompt(
             return read_text(include_path)
         except FileNotFoundError as exc:
             raise RuntimeError(
-                f"prompt_file(path) file not found: {include_raw}. "
-                "Check the path relative to the workflow config file."
+                f"prompt_file(path) file not found: {include_raw}. Check the path relative to the workflow config file."
             ) from exc
         except OSError as exc:
             raise RuntimeError(
-                f"prompt_file(path) cannot read file: {include_raw} ({exc}). "
-                "Check file permissions and UTF-8 content."
+                f"prompt_file(path) cannot read file: {include_raw} ({exc}). Check file permissions and UTF-8 content."
             ) from exc
 
     try:
         env = Environment(
-            undefined=StrictUndefined,
+            undefined=cast(Any, StrictUndefined),
             autoescape=False,
             finalize=finalize_prompt_value,
         )
@@ -749,12 +783,14 @@ def parse_and_validate_output(raw_output: str) -> tuple[dict[str, Any], bool]:
 
     if not isinstance(control, dict):
         raise RuntimeError("Last-line JSON must be an object")
-    if "pass" not in control:
+    control_obj = cast(dict[str, Any], control)
+    if "pass" not in control_obj:
         raise RuntimeError("Last-line JSON must contain 'pass' field")
-    pass_flag = control["pass"]
-    if not isinstance(pass_flag, bool):
+    pass_flag_raw = control_obj["pass"]
+    if not isinstance(pass_flag_raw, bool):
         raise RuntimeError("Last-line JSON field 'pass' must be boolean")
-    return {"result": result_text, "control": control}, pass_flag
+    pass_flag = pass_flag_raw
+    return {"result": result_text, "control": control_obj}, pass_flag
 
 
 @task
@@ -774,12 +810,16 @@ def apply_route_bindings(node: dict[str, Any], pass_flag: bool, runtime_state: d
     route_name = "success" if pass_flag else "failure"
     applied: dict[str, str] = {}
     for binding in get_compiled_route_bindings(node, route_name):
-        target_path = binding["target"]
-        source_path = binding["source"]
-        value = resolve_dotted_parts(runtime_state, binding["source_parts"], source_path)
-        if isinstance(value, (dict, list)):
-            value = copy.deepcopy(value)
-        set_dotted_parts(runtime_state, binding["target_parts"], target_path, value)
+        target_path = cast(str, binding["target"])
+        source_path = cast(str, binding["source"])
+        source_parts = cast(tuple[str, ...], binding["source_parts"])
+        target_parts = cast(tuple[str, ...], binding["target_parts"])
+        value: Any = resolve_dotted_parts(runtime_state, source_parts, source_path)
+        if isinstance(value, dict):
+            value = copy.deepcopy(cast(dict[str, Any], value))
+        elif isinstance(value, list):
+            value = copy.deepcopy(cast(list[Any], value))
+        set_dotted_parts(runtime_state, target_parts, target_path, value)
         applied[target_path] = source_path
     return applied
 
@@ -793,14 +833,16 @@ def ensure_history_list(
     if target_parts is None:
         raise RuntimeError(f"History target missing compiled path: {target_path}")
     parts = target_parts
+    current_any: Any
     try:
-        current = resolve_dotted_parts(runtime_state, parts, target_path)
+        current_any = resolve_dotted_parts(runtime_state, parts, target_path)
     except RuntimeError:
-        current = []
-        set_dotted_parts(runtime_state, parts, target_path, current)
-    if not isinstance(current, list):
+        current_any = cast(list[Any], [])
+        set_dotted_parts(runtime_state, parts, target_path, current_any)
+    if not isinstance(current_any, list):
         raise RuntimeError(f"History target must be array at path: {target_path}")
-    return current
+    current_list: list[Any] = cast(list[Any], current_any)
+    return current_list
 
 
 @task

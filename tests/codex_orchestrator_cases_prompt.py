@@ -1,21 +1,24 @@
 import os
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 from tests.codex_orchestrator_test_support import (
-    PatchedYamlMixin,
     ROOT,
+    PatchedYamlMixin,
     WorkflowTestFactoryMixin,
     module,
 )
+
 
 class PromptRenderingTests(PatchedYamlMixin, unittest.TestCase):
     def _render(
         self,
         prompt: str,
-        prompt_inputs: dict | None = None,
+        prompt_inputs: dict[str, Any] | None = None,
         config_path: str | None = None,
         node_id: str = "node_a",
         prompt_field: str = "workflow.nodes[1].prompt",
@@ -214,8 +217,11 @@ class PromptPathResolutionWorkflowTests(PatchedYamlMixin, unittest.TestCase):
         )
 
     def _fake_json_success_exec(self, captured_prompts: list[str] | None = None):
+        def _raw_output_for_call(**_kwargs: Any) -> str:
+            return '{"pass": true}'
+
         return WorkflowTestFactoryMixin().make_fake_codex_exec(
-            raw_output_for_call=lambda **_: '{"pass": true}',
+            raw_output_for_call=cast(Callable[..., str], _raw_output_for_call),
             captured_prompts=captured_prompts,
         )
 
@@ -239,7 +245,10 @@ class PromptPathResolutionWorkflowTests(PatchedYamlMixin, unittest.TestCase):
             cwd_a.mkdir(parents=True, exist_ok=True)
             cwd_b.mkdir(parents=True, exist_ok=True)
             try:
-                with self.patch_yaml(), patch.object(module, "run_codex_exec", side_effect=fake_codex_exec):
+                with (
+                    self.patch_yaml(),
+                    patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+                ):
                     os.chdir(cwd_a)
                     module.run_workflow(str(config_path), {})
                     os.chdir(cwd_b)
@@ -265,7 +274,10 @@ class PromptPathResolutionWorkflowTests(PatchedYamlMixin, unittest.TestCase):
             prompts: list[str] = []
             fake_codex_exec = self._fake_json_success_exec(prompts)
 
-            with self.patch_yaml(), patch.object(module, "run_codex_exec", side_effect=fake_codex_exec):
+            with (
+                self.patch_yaml(),
+                patch.object(module, "run_codex_exec", side_effect=fake_codex_exec),
+            ):
                 module.run_workflow(str(config_path), {})
 
             self.assertEqual(len(prompts), 1)

@@ -1,26 +1,29 @@
 import json
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 from tests.codex_orchestrator_test_support import (
-    PatchedYamlMixin,
     TEST_CONFIG_RELATIVE_PATH,
+    PatchedYamlMixin,
     WorkflowTestFactoryMixin,
     module,
 )
+
 
 class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest.TestCase):
     def _run_workflow_with_fake_exec(
         self,
         config_path: Path,
         *,
-        payload_for_call=None,
-        raw_output_for_call=None,
+        payload_for_call: Any = None,
+        raw_output_for_call: Any = None,
         captured_prompts: list[str] | None = None,
         expect_error: str | None = None,
-    ):
+    ) -> dict[str, Any] | None:
         fake_exec = self.make_fake_codex_exec(
             payload_for_call,
             raw_output_for_call=raw_output_for_call,
@@ -50,9 +53,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                         "parse_output_json": False,
                         "on_success": "check",
                         "on_failure": "END",
-                        "route_bindings": {
-                            "success": {"context.runtime.latest_impl": "outputs.implement_first"}
-                        },
+                        "route_bindings": {"success": {"context.runtime.latest_impl": "outputs.implement_first"}},
                     },
                     {
                         "id": "check",
@@ -60,9 +61,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                         "input_map": {"latest_impl": "context.runtime.latest_impl"},
                         "on_success": "END",
                         "on_failure": "implement_loop",
-                        "route_bindings": {
-                            "failure": {"context.runtime.latest_check": "outputs.check.control"}
-                        },
+                        "route_bindings": {"failure": {"context.runtime.latest_check": "outputs.check.control"}},
                     },
                     {
                         "id": "implement_loop",
@@ -71,14 +70,13 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                         "parse_output_json": False,
                         "on_success": "check",
                         "on_failure": "END",
-                        "route_bindings": {
-                            "success": {"context.runtime.latest_impl": "outputs.implement_loop"}
-                        },
+                        "route_bindings": {"success": {"context.runtime.latest_impl": "outputs.implement_loop"}},
                     },
                 ],
             )
 
-            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
+            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str) -> dict[str, Any]:
+                payload: dict[str, Any]
                 if node_id == "implement_first":
                     payload = {"pass": True, "node": node_id, "step": step}
                 elif node_id == "check" and attempt == 1:
@@ -92,6 +90,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 return payload
 
             summary = self._run_workflow_with_fake_exec(config_path, payload_for_call=payload_for_call)
+            assert summary is not None
 
             self.assertEqual(summary["status"], "completed")
             self.assertEqual(summary["final_node"], "END")
@@ -105,11 +104,10 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
             self.assertIsInstance(runtime_state["context"]["runtime"]["latest_impl"], str)
             self.assertEqual(
-                json.loads(runtime_state["context"]["runtime"]["latest_impl"])["node"], "implement_loop"
+                json.loads(runtime_state["context"]["runtime"]["latest_impl"])["node"],
+                "implement_loop",
             )
-            self.assertEqual(
-                runtime_state["context"]["runtime"]["latest_check"]["node"], "check"
-            )
+            self.assertEqual(runtime_state["context"]["runtime"]["latest_check"]["node"], "check")
 
     def test_run_workflow_uses_run_level_state_isolation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,18 +129,22 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 ],
             )
 
-            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
+            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str) -> dict[str, Any]:
                 return {"pass": True, "node": node_id, "step": step}
 
             summary1 = self._run_workflow_with_fake_exec(config_path, payload_for_call=payload_for_call)
             summary2 = self._run_workflow_with_fake_exec(config_path, payload_for_call=payload_for_call)
+            assert summary1 is not None and summary2 is not None
 
             state_root = tmp_path / ".codex-loop-state"
             runs_root = state_root / "runs"
             run_dirs = sorted([p for p in runs_root.iterdir() if p.is_dir()])
             self.assertEqual(len(run_dirs), 2)
             self.assertNotEqual(summary1["run_id"], summary2["run_id"])
-            self.assertEqual((state_root / "latest_run_id").read_text(encoding="utf-8").strip(), summary2["run_id"])
+            self.assertEqual(
+                (state_root / "latest_run_id").read_text(encoding="utf-8").strip(),
+                summary2["run_id"],
+            )
 
             for run_dir in run_dirs:
                 self.assertTrue((run_dir / "history.jsonl").is_file())
@@ -189,6 +191,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 raw_output_for_call=raw_output_for_call,
                 captured_prompts=captured_prompts,
             )
+            assert summary is not None
 
             self.assertEqual(summary["status"], "completed")
             self.assertEqual(summary["outputs"]["implement"], "Implemented feature A.\nNo JSON line.")
@@ -216,10 +219,14 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 ],
             )
 
+            def raw_output_plain_text(**_kwargs: Any) -> str:
+                return "Implemented feature B.\nStill plain text.\n"
+
             summary = self._run_workflow_with_fake_exec(
                 config_path,
-                raw_output_for_call=lambda **_: "Implemented feature B.\nStill plain text.\n",
+                raw_output_for_call=cast(Callable[..., str], raw_output_plain_text),
             )
+            assert summary is not None
 
             expected_output = "Implemented feature B.\nStill plain text."
             self.assertEqual(summary["status"], "completed")
@@ -229,14 +236,10 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             self.assertIsInstance(runtime_state["outputs"]["implement"], str)
             self.assertEqual(runtime_state["outputs"]["implement"], expected_output)
             self.assertEqual(runtime_state["context"]["runtime"]["implement_history"], [expected_output])
-            self.assertTrue(
-                all(isinstance(item, str) for item in runtime_state["context"]["runtime"]["implement_history"])
-            )
+            self.assertTrue(all(isinstance(item, str) for item in runtime_state["context"]["runtime"]["implement_history"]))
 
             parsed_step = json.loads(
-                (Path(summary["run_state_dir"]) / "step001__implement__attempt01__parsed.json").read_text(
-                    encoding="utf-8"
-                )
+                (Path(summary["run_state_dir"]) / "step001__implement__attempt01__parsed.json").read_text(encoding="utf-8")
             )
             self.assertIsInstance(parsed_step, str)
             self.assertEqual(parsed_step, expected_output)
@@ -274,9 +277,9 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             )
             captured_prompts: list[str] = []
 
-            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
+            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str) -> dict[str, Any]:
                 captured_prompts.append(prompt)
-                payloads = [
+                payloads: list[dict[str, Any]] = [
                     {"pass": False, "issues": ["a"]},
                     {"pass": False, "issues": ["a", "b"]},
                     {"pass": True, "issues": []},
@@ -287,6 +290,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 config_path,
                 payload_for_call=payload_for_call,
             )
+            assert summary is not None
 
             self.assertEqual(summary["status"], "completed")
             runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
@@ -300,9 +304,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             )
             self.assertIn('"result": ""', captured_prompts[1])
             parsed_step_3 = json.loads(
-                (Path(summary["run_state_dir"]) / "step003__review__attempt03__parsed.json").read_text(
-                    encoding="utf-8"
-                )
+                (Path(summary["run_state_dir"]) / "step003__review__attempt03__parsed.json").read_text(encoding="utf-8")
             )
             self.assertEqual(parsed_step_3, {"result": "", "control": {"pass": True, "issues": []}})
 
@@ -328,7 +330,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             )
             captured_prompts: list[str] = []
 
-            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
+            def payload_for_call(*, node_id: str, step: int, attempt: int, prompt: str) -> dict[str, Any]:
                 captured_prompts.append(prompt)
                 return {"pass": True, "issues": []}
 
@@ -336,6 +338,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 config_path,
                 payload_for_call=payload_for_call,
             )
+            assert summary is not None
 
             self.assertEqual(summary["status"], "completed")
             self.assertEqual(len(captured_prompts), 1)
@@ -411,15 +414,20 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
                 ],
             )
 
+            def raw_output_review_done(**_kwargs: Any) -> str:
+                return '已检查完成\n{"pass": true, "issues": []}\n'
+
             summary = self._run_workflow_with_fake_exec(
                 config_path,
-                raw_output_for_call=lambda **_: "已检查完成\n{\"pass\": true, \"issues\": []}\n",
+                raw_output_for_call=cast(Callable[..., str], raw_output_review_done),
             )
+            assert summary is not None
 
-            runtime_state = json.loads(
-                (Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8")
+            runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                runtime_state["context"]["runtime"]["latest_check_control"],
+                {"pass": True, "issues": []},
             )
-            self.assertEqual(runtime_state["context"]["runtime"]["latest_check_control"], {"pass": True, "issues": []})
             self.assertEqual(runtime_state["context"]["runtime"]["latest_check_result"], "已检查完成\n")
 
 
@@ -427,7 +435,7 @@ class MaxStepsTests(PatchedYamlMixin, unittest.TestCase):
     def test_run_workflow_stops_when_reaching_max_steps(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            config = {
+            config: dict[str, Any] = {
                 "version": 1,
                 "run": {
                     "project_root": str(tmp_path),
@@ -453,8 +461,11 @@ class MaxStepsTests(PatchedYamlMixin, unittest.TestCase):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(json.dumps(config), encoding="utf-8")
 
+            def raw_output_loop(**_kwargs: Any) -> str:
+                return '{"pass": true, "node": "loop"}'
+
             fake_exec = WorkflowTestFactoryMixin().make_fake_codex_exec(
-                raw_output_for_call=lambda **_: '{"pass": true, "node": "loop"}'
+                raw_output_for_call=cast(Callable[..., str], raw_output_loop)
             )
             with (
                 self.patch_yaml(),

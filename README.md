@@ -53,8 +53,46 @@ python3 scripts/codex_automation_loops.py \
    python3.13 -m pip install --break-system-packages --user -r requirements.txt
    ```
 
-2. `--preset` 必须是仓库内置预设标识符（对应 `presets/<id>.yaml`）
-3. `run.project_root` 指向有效项目目录（相对路径以启动命令时的当前工作目录 `cwd` 为基准）
+2. 安装 git hooks（`pre-commit` + `pre-push`）并做一次本地验证：
+
+   ```bash
+   ./scripts/setup_hooks.sh
+   ```
+
+3. `--preset` 必须是仓库内置预设标识符（对应 `presets/<id>.yaml`）
+4. `run.project_root` 指向有效项目目录（相对路径以启动命令时的当前工作目录 `cwd` 为基准）
+
+## Python 质量门禁（Ruff + basedpyright + pre-commit）
+
+本仓库仅支持以下 Python 质量工具链：
+
+- `ruff`（lint + format）
+- `basedpyright`（strict 类型检查）
+- `pre-commit`（本地与 CI 的统一入口）
+
+旧的 Python 质量工具链（例如 `pylint`）在本仓库中已不再受支持，属于不兼容变更。
+
+### 规范的本地执行命令
+
+```bash
+pre-commit run --all-files --hook-stage pre-commit
+pre-commit run --all-files --hook-stage pre-push
+```
+
+这两条命令与 CI 质量门禁完全一致，且都以 `scripts/` 与 `tests/` 为全量检查范围（不是仅检查改动文件）。
+
+### 版本对齐规则
+
+- 对外部 hook 仓库（非 `repo: local`），`.pre-commit-config.yaml` 中 hook `rev` 是执行时权威版本。
+- 依赖文件中的工具版本 pin 必须与该 `rev` 对齐。
+- `repo: local` hook 不适用 `rev` 权威规则。
+
+### 轻量校验清单（修改 hook 版本时）
+
+1. 更新 `.pre-commit-config.yaml` 的目标 hook `rev`。
+2. 同步更新 `requirements.txt` 中对应工具的 pin。
+3. 运行 `pre-commit run --all-files --hook-stage pre-commit`。
+4. 运行 `pre-commit run --all-files --hook-stage pre-push`。
 
 ## CLI 参数
 

@@ -1,10 +1,10 @@
 import importlib.util
 import json
 import types
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, cast
 from unittest.mock import patch
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "codex_automation_loops.py"
@@ -12,8 +12,8 @@ TEST_CONFIG_RELATIVE_PATH = Path("presets") / "test_preset.yaml"
 
 
 spec = importlib.util.spec_from_file_location("codex_orchestrator", SCRIPT_PATH)
+assert spec is not None and spec.loader is not None
 module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
 spec.loader.exec_module(module)
 
 
@@ -108,7 +108,7 @@ class WorkflowTestFactoryMixin:
         *,
         raw_output_for_call: Callable[..., str] | None = None,
         captured_prompts: list[str] | None = None,
-    ):
+    ) -> Callable[..., str]:
         if (payload_for_call is None) == (raw_output_for_call is None):
             raise ValueError("Provide exactly one of payload_for_call or raw_output_for_call")
 
@@ -124,10 +124,11 @@ class WorkflowTestFactoryMixin:
         ) -> str:
             if captured_prompts is not None:
                 captured_prompts.append(prompt)
-            kwargs = {"node_id": node_id, "step": step, "attempt": attempt, "prompt": prompt}
+            kwargs: dict[str, Any] = {"node_id": node_id, "step": step, "attempt": attempt, "prompt": prompt}
             if raw_output_for_call is not None:
                 out_text = raw_output_for_call(**kwargs)
             else:
+                assert payload_for_call is not None
                 out_text = json.dumps(payload_for_call(**kwargs), ensure_ascii=False)
 
             Path(out_file).write_text(out_text, encoding="utf-8")
@@ -135,4 +136,4 @@ class WorkflowTestFactoryMixin:
             log_path.write_text("ok", encoding="utf-8")
             return str(log_path)
 
-        return fake_codex_exec
+        return cast(Callable[..., str], fake_codex_exec)

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from tests.codex_orchestrator_test_support import ROOT, module
 
+
 class BuiltinPresetWiringTests(unittest.TestCase):
     def assert_review_only_preset(
         self,
@@ -75,9 +76,7 @@ class BuiltinPresetWiringTests(unittest.TestCase):
 
 class CliHelperTests(unittest.TestCase):
     def test_parse_context_overrides_last_value_wins(self):
-        overrides = module.parse_context_overrides(
-            [["spec", "v1"], ["spec", "v2"], ["user_instruction", "do it"]]
-        )
+        overrides = module.parse_context_overrides([["spec", "v1"], ["spec", "v2"], ["user_instruction", "do it"]])
         self.assertEqual(overrides["spec"], "v2")
         self.assertEqual(overrides["user_instruction"], "do it")
 

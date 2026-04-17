@@ -1,0 +1,46 @@
+default_language_version:
+  python: python3.13
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      - id: ruff-check
+        name: ruff-check-autofix
+        args: [--fix, --exit-non-zero-on-fix, scripts, tests]
+        files: ^(scripts|tests)/.*\.py$
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: ruff-format
+        name: ruff-format-write
+        args: [scripts, tests]
+        files: ^(scripts|tests)/.*\.py$
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: ruff-check
+        name: ruff-check-verify
+        args: [scripts, tests]
+        files: ^(scripts|tests)/.*\.py$
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+      - id: ruff-format
+        name: ruff-format-check
+        args: [--check, scripts, tests]
+        files: ^(scripts|tests)/.*\.py$
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+
+  - repo: local
+    hooks:
+      - id: basedpyright
+        name: basedpyright-strict
+        entry: basedpyright --warnings scripts tests
+        language: system
+        files: ^(scripts|tests)/.*\.py$
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit, pre-push]

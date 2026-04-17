@@ -1,21 +1,22 @@
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from tests.codex_orchestrator_test_support import (
-    PatchedYamlMixin,
-    ROOT,
     TEST_CONFIG_RELATIVE_PATH,
+    PatchedYamlMixin,
     WorkflowTestFactoryMixin,
     module,
     write_json_config,
 )
 
+
 class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest.TestCase):
-    def _write_config(self, base_dir: Path, payload: dict) -> Path:
+    def _write_config(self, base_dir: Path, payload: dict[str, Any]) -> Path:
         return write_json_config(base_dir / TEST_CONFIG_RELATIVE_PATH, payload)
 
-    def _minimal_valid_config(self, project_root: str) -> dict:
+    def _minimal_valid_config(self, project_root: str) -> dict[str, Any]:
         return self.build_workflow_payload(
             project_root=project_root,
             max_steps=3,
@@ -67,12 +68,13 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             payload = self._minimal_valid_config(project_root=tmp)
-            payload["workflow"]["nodes"][0]["route_bindings"] = {
-                "success": {"outputs.latest_impl": "outputs.n1"}
-            }
+            payload["workflow"]["nodes"][0]["route_bindings"] = {"success": {"outputs.latest_impl": "outputs.n1"}}
             config_path = self._write_config(tmp_path, payload)
 
-            with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "must start with context.runtime."):
+            with (
+                self.patch_yaml(),
+                self.assertRaisesRegex(RuntimeError, "must start with context.runtime."),
+            ):
                 module.load_config(str(config_path), {})
 
     def test_load_config_applies_context_overrides(self):
@@ -99,7 +101,10 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
             payload["context"]["defaults"] = {"spec": {"path": "bad"}}
             config_path = self._write_config(tmp_path, payload)
 
-            with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "cannot be object or array"):
+            with (
+                self.patch_yaml(),
+                self.assertRaisesRegex(RuntimeError, "cannot be object or array"),
+            ):
                 module.load_config(str(config_path), {})
 
     def test_load_config_rejects_non_string_prompt(self):
@@ -109,7 +114,10 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
             payload["workflow"]["nodes"][0]["prompt"] = {"bad": "type"}
             config_path = self._write_config(tmp_path, payload)
 
-            with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "workflow.nodes\\[1\\]\\.prompt"):
+            with (
+                self.patch_yaml(),
+                self.assertRaisesRegex(RuntimeError, "workflow.nodes\\[1\\]\\.prompt"),
+            ):
                 module.load_config(str(config_path), {})
 
     def test_load_config_rejects_empty_prompt(self):
@@ -119,7 +127,10 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
             payload["workflow"]["nodes"][0]["prompt"] = "   "
             config_path = self._write_config(tmp_path, payload)
 
-            with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "workflow.nodes\\[1\\]\\.prompt"):
+            with (
+                self.patch_yaml(),
+                self.assertRaisesRegex(RuntimeError, "workflow.nodes\\[1\\]\\.prompt"),
+            ):
                 module.load_config(str(config_path), {})
 
     def test_load_config_rejects_collect_history_to_outside_runtime_context(self):
@@ -129,16 +140,17 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
             payload["workflow"]["nodes"][0]["collect_history_to"] = "outputs.review_history"
             config_path = self._write_config(tmp_path, payload)
 
-            with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "collect_history_to must start"):
+            with (
+                self.patch_yaml(),
+                self.assertRaisesRegex(RuntimeError, "collect_history_to must start"),
+            ):
                 module.load_config(str(config_path), {})
 
     def test_load_config_compiles_input_and_route_binding_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             payload = self._minimal_valid_config(project_root=tmp)
-            payload["workflow"]["nodes"][0]["route_bindings"] = {
-                "success": {"context.runtime.latest_impl": "outputs.n1"}
-            }
+            payload["workflow"]["nodes"][0]["route_bindings"] = {"success": {"context.runtime.latest_impl": "outputs.n1"}}
             config_path = self._write_config(tmp_path, payload)
 
             with self.patch_yaml():
@@ -191,7 +203,10 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
             payload["run"]["max_steps"] = True
             config_path = self._write_config(tmp_path, payload)
 
-            with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "run.max_steps must be positive integer"):
+            with (
+                self.patch_yaml(),
+                self.assertRaisesRegex(RuntimeError, "run.max_steps must be positive integer"),
+            ):
                 module.load_config(str(config_path), {})
 
     def test_load_config_reports_invalid_route_binding_keys_with_mixed_key_types(self):
@@ -204,9 +219,12 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
             }
             config_path = self._write_config(tmp_path, payload)
 
-            with self.patch_yaml(), self.assertRaisesRegex(
-                RuntimeError,
-                "route_bindings has unsupported keys: 1",
+            with (
+                self.patch_yaml(),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "route_bindings has unsupported keys: 1",
+                ),
             ):
                 module.load_config(str(config_path), {})
 
@@ -217,7 +235,10 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
             payload["context"] = []
             config_path = self._write_config(tmp_path, payload)
 
-            with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "'context' must be object"):
+            with (
+                self.patch_yaml(),
+                self.assertRaisesRegex(RuntimeError, "'context' must be object"),
+            ):
                 module.load_config(str(config_path), {})
 
     def test_load_config_rejects_non_object_executor_even_if_falsey(self):
@@ -227,5 +248,8 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
             payload["executor"] = ""
             config_path = self._write_config(tmp_path, payload)
 
-            with self.patch_yaml(), self.assertRaisesRegex(RuntimeError, "'executor' must be object"):
+            with (
+                self.patch_yaml(),
+                self.assertRaisesRegex(RuntimeError, "'executor' must be object"),
+            ):
                 module.load_config(str(config_path), {})
