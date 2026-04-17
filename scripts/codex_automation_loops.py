@@ -9,7 +9,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 try:
     from prefect import flow, task
@@ -140,6 +140,19 @@ def ensure_flat_context_map(value: Any, field_name: str) -> dict[str, Any]:
     return data
 
 
+def ensure_optional_dict(value: Any, field_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    return ensure_dict(value, field_name)
+
+
+def ensure_string_map(value: Any, field_name: str) -> dict[str, str]:
+    data = ensure_dict(value, field_name)
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+        raise RuntimeError(f"{field_name} must be string->string map")
+    return data
+
+
 def validate_source_path(path_value: str, field_name: str) -> None:
     if not any(path_value.startswith(prefix) for prefix in ALLOWED_SOURCE_PREFIXES):
         raise RuntimeError(
@@ -152,6 +165,30 @@ def parse_dotted_path(path_value: str, field_name: str) -> tuple[str, ...]:
     if not parts or any(not part for part in parts):
         raise RuntimeError(f"Invalid dotted path: {path_value} ({field_name})")
     return parts
+
+
+def compile_source_binding(source_path: str, field_name: str) -> dict[str, Any]:
+    validate_source_path(source_path, field_name)
+    return {
+        "source": source_path,
+        "source_parts": parse_dotted_path(source_path, field_name),
+    }
+
+
+def compile_runtime_target(target_path: str, field_name: str) -> dict[str, Any]:
+    if not target_path.startswith(ROUTE_BINDING_TARGET_PREFIX):
+        raise RuntimeError(
+            f"{field_name} must start with {ROUTE_BINDING_TARGET_PREFIX}"
+        )
+    return {
+        "target": target_path,
+        "target_parts": parse_dotted_path(target_path, field_name),
+    }
+
+
+def format_sorted_keys(keys: set[Any]) -> str:
+    key_labels = [key if isinstance(key, str) else repr(key) for key in keys]
+    return ", ".join(sorted(key_labels))
 
 
 def resolve_dotted_parts(data: dict[str, Any], path_parts: tuple[str, ...], dotted_path: str) -> Any:
@@ -247,6 +284,215 @@ def parse_context_overrides(pairs: list[list[str]] | None) -> dict[str, str]:
     return overrides
 
 
+def parse_run_config(run_cfg: dict[str, Any], launch_cwd: str | None) -> dict[str, Any]:
+    project_root_raw = ensure_string(run_cfg.get("project_root"), "run.project_root")
+    project_root_base = Path(launch_cwd).resolve() if launch_cwd else Path.cwd().resolve()
+    project_root = resolve_path(project_root_raw, project_root_base)
+    if not project_root.is_dir():
+        raise RuntimeError(f"run.project_root not found: {project_root}")
+
+    state_dir_raw = ensure_string(run_cfg.get("state_dir", ".codex-loop-state"), "run.state_dir")
+    state_dir = resolve_path(state_dir_raw, project_root)
+
+    max_steps = run_cfg.get("max_steps")
+    if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0:
+        raise RuntimeError("run.max_steps must be positive integer")
+
+    return {
+        "project_root": str(project_root),
+        "state_dir": str(state_dir),
+        "max_steps": max_steps,
+    }
+
+
+def parse_executor_config(executor_cfg: dict[str, Any]) -> dict[str, Any]:
+    executor_cmd_raw = executor_cfg.get("cmd", DEFAULT_EXECUTOR_CMD)
+    executor_cmd = ensure_string_list(executor_cmd_raw, "executor.cmd")
+    return {"cmd": executor_cmd}
+
+
+def parse_context_defaults(
+    context_cfg: dict[str, Any],
+    context_overrides: dict[str, str],
+) -> dict[str, Any]:
+    defaults_context = ensure_flat_context_map(context_cfg.get("defaults", {}), "context.defaults")
+    return {**defaults_context, **context_overrides}
+
+
+def parse_optional_section(raw_root: dict[str, Any], field_name: str) -> dict[str, Any]:
+    return ensure_optional_dict(raw_root.get(field_name), field_name)
+
+
+def compile_input_bindings(
+    input_map_raw: Any,
+    node_field_prefix: str,
+) -> list[dict[str, Any]]:
+    input_map_raw = ensure_string_map(input_map_raw, f"{node_field_prefix}.input_map")
+
+    input_bindings: list[dict[str, Any]] = []
+    for input_key, source_path in input_map_raw.items():
+        field_name = f"{node_field_prefix}.input_map.{input_key}"
+        input_bindings.append(
+            {
+                "input_key": input_key,
+                **compile_source_binding(source_path, field_name),
+            }
+        )
+    return input_bindings
+
+
+def normalize_input_bindings(input_bindings: list[dict[str, Any]]) -> dict[str, str]:
+    return {binding["input_key"]: binding["source"] for binding in input_bindings}
+
+
+def compile_history_target(
+    collect_history_to_raw: Any,
+    node_field_prefix: str,
+) -> dict[str, Any] | None:
+    if collect_history_to_raw is None:
+        return None
+
+    collect_history_to = ensure_string(
+        collect_history_to_raw,
+        f"{node_field_prefix}.collect_history_to",
+    )
+    return compile_runtime_target(
+        collect_history_to,
+        f"{node_field_prefix}.collect_history_to",
+    )
+
+
+def compile_route_bindings(
+    route_bindings_raw: Any,
+    node_field_prefix: str,
+) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(route_bindings_raw, dict):
+        raise RuntimeError(f"{node_field_prefix}.route_bindings must be object")
+
+    unknown_routes = set(route_bindings_raw.keys()) - {"success", "failure"}
+    if unknown_routes:
+        bad = format_sorted_keys(unknown_routes)
+        raise RuntimeError(
+            f"{node_field_prefix}.route_bindings has unsupported keys: {bad} (allowed: success,failure)"
+        )
+
+    compiled_bindings: dict[str, list[dict[str, Any]]] = {}
+    for route_name in ("success", "failure"):
+        route_map_raw = route_bindings_raw.get(route_name, {})
+        route_map_raw = ensure_string_map(
+            route_map_raw,
+            f"{node_field_prefix}.route_bindings.{route_name}",
+        )
+
+        compiled_route: list[dict[str, Any]] = []
+        for target_path, source_path in route_map_raw.items():
+            source_field = f"{node_field_prefix}.route_bindings.{route_name}.{target_path}"
+            compiled_route.append(
+                {
+                    **compile_runtime_target(target_path, f"{source_field}.target"),
+                    **compile_source_binding(source_path, source_field),
+                }
+            )
+
+        compiled_bindings[route_name] = compiled_route
+
+    return compiled_bindings
+
+
+def normalize_route_bindings(
+    compiled_bindings: dict[str, list[dict[str, Any]]]
+) -> dict[str, dict[str, str]]:
+    return {
+        route_name: {binding["target"]: binding["source"] for binding in bindings}
+        for route_name, bindings in compiled_bindings.items()
+    }
+
+
+def compile_workflow_node(node_raw: Any, idx: int) -> dict[str, Any]:
+    node_field_prefix = f"workflow.nodes[{idx}]"
+    node = ensure_dict(node_raw, node_field_prefix)
+    node_id = ensure_string(node.get("id"), f"{node_field_prefix}.id")
+    if node_id == END_NODE:
+        raise RuntimeError(f"{node_field_prefix}.id cannot be reserved id: {END_NODE}")
+
+    prompt = ensure_string(node.get("prompt"), f"{node_field_prefix}.prompt")
+    input_bindings = compile_input_bindings(node.get("input_map", {}), node_field_prefix)
+    on_success = ensure_string(node.get("on_success"), f"{node_field_prefix}.on_success")
+    on_failure = ensure_string(node.get("on_failure"), f"{node_field_prefix}.on_failure")
+    parse_output_json = ensure_bool(
+        node.get("parse_output_json", True),
+        f"{node_field_prefix}.parse_output_json",
+    )
+    history_target = compile_history_target(node.get("collect_history_to"), node_field_prefix)
+    route_bindings_compiled = compile_route_bindings(
+        node.get("route_bindings", {}),
+        node_field_prefix,
+    )
+
+    return {
+        "id": node_id,
+        "prompt": prompt,
+        "prompt_field": f"{node_field_prefix}.prompt",
+        "input_map": normalize_input_bindings(input_bindings),
+        "on_success": on_success,
+        "on_failure": on_failure,
+        "parse_output_json": parse_output_json,
+        "collect_history_to": history_target["target"] if history_target else None,
+        "route_bindings": normalize_route_bindings(route_bindings_compiled),
+        "compiled": {
+            "input_bindings": input_bindings,
+            "collect_history_target": history_target,
+            "route_bindings": route_bindings_compiled,
+        },
+    }
+
+
+def validate_workflow_transitions(nodes: list[dict[str, Any]], node_ids: set[str]) -> None:
+    for node in nodes:
+        for route_key in ("on_success", "on_failure"):
+            target = node[route_key]
+            if target != END_NODE and target not in node_ids:
+                raise RuntimeError(
+                    f"Node '{node['id']}' has invalid {route_key}: {target} (must be existing node or END)"
+                )
+
+
+def get_node_compiled(node: dict[str, Any]) -> dict[str, Any]:
+    compiled = node.get("compiled")
+    if not isinstance(compiled, dict):
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled config")
+    return compiled
+
+
+def get_compiled_input_bindings(node: dict[str, Any]) -> list[dict[str, Any]]:
+    compiled = get_node_compiled(node)
+    bindings = compiled.get("input_bindings")
+    if not isinstance(bindings, list):
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled input_bindings")
+    return bindings
+
+
+def get_compiled_history_target(node: dict[str, Any]) -> dict[str, Any] | None:
+    compiled = get_node_compiled(node)
+    if "collect_history_target" not in compiled:
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled collect_history_target")
+    target = compiled["collect_history_target"]
+    if target is None or isinstance(target, dict):
+        return target
+    raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' has invalid compiled collect_history_target")
+
+
+def get_compiled_route_bindings(node: dict[str, Any], route_name: str) -> list[dict[str, Any]]:
+    compiled = get_node_compiled(node)
+    compiled_routes = compiled.get("route_bindings")
+    if not isinstance(compiled_routes, dict):
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled route_bindings")
+    bindings = compiled_routes.get(route_name)
+    if not isinstance(bindings, list):
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled route_bindings.{route_name}")
+    return bindings
+
+
 @task
 def load_config(
     config_path: str,
@@ -263,32 +509,13 @@ def load_config(
     if version != 1:
         raise RuntimeError("Config 'version' must be 1")
 
-    run_cfg = ensure_dict(raw.get("run"), "run")
+    run_cfg = parse_run_config(ensure_dict(raw.get("run"), "run"), launch_cwd)
+    executor_cfg = parse_executor_config(parse_optional_section(raw, "executor"))
+    context_defaults = parse_context_defaults(
+        parse_optional_section(raw, "context"),
+        context_overrides,
+    )
     workflow_cfg = ensure_dict(raw.get("workflow"), "workflow")
-
-    project_root_raw = ensure_string(run_cfg.get("project_root"), "run.project_root")
-    project_root_base = Path(launch_cwd).resolve() if launch_cwd else Path.cwd().resolve()
-    project_root = resolve_path(project_root_raw, project_root_base)
-    if not project_root.is_dir():
-        raise RuntimeError(f"run.project_root not found: {project_root}")
-
-    state_dir_raw = ensure_string(run_cfg.get("state_dir", ".codex-loop-state"), "run.state_dir")
-    state_dir = resolve_path(state_dir_raw, project_root)
-
-    max_steps = run_cfg.get("max_steps")
-    if not isinstance(max_steps, int) or max_steps <= 0:
-        raise RuntimeError("run.max_steps must be positive integer")
-
-    executor_cfg_raw = raw.get("executor") or {}
-    executor_cfg = ensure_dict(executor_cfg_raw, "executor")
-    executor_cmd_raw = executor_cfg.get("cmd", DEFAULT_EXECUTOR_CMD)
-    executor_cmd = ensure_string_list(executor_cmd_raw, "executor.cmd")
-
-    context_cfg_raw = raw.get("context") or {}
-    context_cfg = ensure_dict(context_cfg_raw, "context")
-    defaults_context = ensure_flat_context_map(context_cfg.get("defaults", {}), "context.defaults")
-    merged_defaults_context = {**defaults_context, **context_overrides}
-
     start_node = ensure_string(workflow_cfg.get("start"), "workflow.start")
     nodes_raw = workflow_cfg.get("nodes")
     if not isinstance(nodes_raw, list) or not nodes_raw:
@@ -297,142 +524,24 @@ def load_config(
     nodes: list[dict[str, Any]] = []
     node_ids: set[str] = set()
     for idx, node_raw in enumerate(nodes_raw, start=1):
-        node = ensure_dict(node_raw, f"workflow.nodes[{idx}]")
-        node_id = ensure_string(node.get("id"), f"workflow.nodes[{idx}].id")
-        if node_id == END_NODE:
-            raise RuntimeError(f"workflow.nodes[{idx}].id cannot be reserved id: {END_NODE}")
+        compiled_node = compile_workflow_node(node_raw, idx)
+        node_id = compiled_node["id"]
         if node_id in node_ids:
             raise RuntimeError(f"Duplicate node id: {node_id}")
         node_ids.add(node_id)
-
-        prompt = ensure_string(node.get("prompt"), f"workflow.nodes[{idx}].prompt")
-        input_map = node.get("input_map", {})
-        if not isinstance(input_map, dict):
-            raise RuntimeError(f"workflow.nodes[{idx}].input_map must be object")
-        if not all(isinstance(k, str) and isinstance(v, str) for k, v in input_map.items()):
-            raise RuntimeError(f"workflow.nodes[{idx}].input_map must be string->string map")
-        input_map_parts: dict[str, tuple[str, ...]] = {}
-        for input_key, source_path in input_map.items():
-            validate_source_path(source_path, f"workflow.nodes[{idx}].input_map.{input_key}")
-            input_map_parts[input_key] = parse_dotted_path(
-                source_path, f"workflow.nodes[{idx}].input_map.{input_key}"
-            )
-
-        on_success = ensure_string(node.get("on_success"), f"workflow.nodes[{idx}].on_success")
-        on_failure = ensure_string(node.get("on_failure"), f"workflow.nodes[{idx}].on_failure")
-        parse_output_json = ensure_bool(
-            node.get("parse_output_json", True),
-            f"workflow.nodes[{idx}].parse_output_json",
-        )
-        collect_history_to_raw = node.get("collect_history_to")
-        collect_history_to: str | None = None
-        collect_history_to_parts: tuple[str, ...] | None = None
-        if collect_history_to_raw is not None:
-            collect_history_to = ensure_string(
-                collect_history_to_raw,
-                f"workflow.nodes[{idx}].collect_history_to",
-            )
-            if not collect_history_to.startswith(ROUTE_BINDING_TARGET_PREFIX):
-                raise RuntimeError(
-                    f"workflow.nodes[{idx}].collect_history_to must start with "
-                    f"{ROUTE_BINDING_TARGET_PREFIX}"
-                )
-            collect_history_to_parts = parse_dotted_path(
-                collect_history_to,
-                f"workflow.nodes[{idx}].collect_history_to",
-            )
-        route_bindings_raw = node.get("route_bindings", {})
-        if not isinstance(route_bindings_raw, dict):
-            raise RuntimeError(f"workflow.nodes[{idx}].route_bindings must be object")
-
-        unknown_routes = set(route_bindings_raw.keys()) - {"success", "failure"}
-        if unknown_routes:
-            bad = ", ".join(sorted(unknown_routes))
-            raise RuntimeError(
-                f"workflow.nodes[{idx}].route_bindings has unsupported keys: {bad} (allowed: success,failure)"
-            )
-
-        route_bindings: dict[str, dict[str, str]] = {}
-        route_bindings_parts: dict[str, list[dict[str, Any]]] = {}
-        for route_name in ("success", "failure"):
-            route_map_raw = route_bindings_raw.get(route_name, {})
-            if not isinstance(route_map_raw, dict):
-                raise RuntimeError(
-                    f"workflow.nodes[{idx}].route_bindings.{route_name} must be object"
-                )
-            if not all(isinstance(k, str) and isinstance(v, str) for k, v in route_map_raw.items()):
-                raise RuntimeError(
-                    f"workflow.nodes[{idx}].route_bindings.{route_name} must be string->string map"
-                )
-
-            normalized_map: dict[str, str] = {}
-            normalized_bindings_parts: list[dict[str, Any]] = []
-            for target_path, source_path in route_map_raw.items():
-                if not target_path.startswith(ROUTE_BINDING_TARGET_PREFIX):
-                    raise RuntimeError(
-                        f"workflow.nodes[{idx}].route_bindings.{route_name} target '{target_path}' "
-                        f"must start with {ROUTE_BINDING_TARGET_PREFIX}"
-                    )
-                validate_source_path(
-                    source_path,
-                    f"workflow.nodes[{idx}].route_bindings.{route_name}.{target_path}",
-                )
-                normalized_map[target_path] = source_path
-                normalized_bindings_parts.append(
-                    {
-                        "target": target_path,
-                        "source": source_path,
-                        "target_parts": parse_dotted_path(
-                            target_path,
-                            f"workflow.nodes[{idx}].route_bindings.{route_name}.{target_path}.target",
-                        ),
-                        "source_parts": parse_dotted_path(
-                            source_path,
-                            f"workflow.nodes[{idx}].route_bindings.{route_name}.{target_path}",
-                        ),
-                    }
-                )
-            route_bindings[route_name] = normalized_map
-            route_bindings_parts[route_name] = normalized_bindings_parts
-
-        nodes.append(
-            {
-                "id": node_id,
-                "prompt": prompt,
-                "prompt_field": f"workflow.nodes[{idx}].prompt",
-                "input_map": input_map,
-                "input_map_parts": input_map_parts,
-                "on_success": on_success,
-                "on_failure": on_failure,
-                "parse_output_json": parse_output_json,
-                "collect_history_to": collect_history_to,
-                "collect_history_to_parts": collect_history_to_parts,
-                "route_bindings": route_bindings,
-                "route_bindings_parts": route_bindings_parts,
-            }
-        )
+        nodes.append(compiled_node)
 
     if start_node not in node_ids:
         raise RuntimeError(f"workflow.start target not found: {start_node}")
 
-    for node in nodes:
-        for route_key in ("on_success", "on_failure"):
-            target = node[route_key]
-            if target != END_NODE and target not in node_ids:
-                raise RuntimeError(
-                    f"Node '{node['id']}' has invalid {route_key}: {target} (must be existing node or END)"
-                )
+    validate_workflow_transitions(nodes, node_ids)
 
     return {
         "version": 1,
         "config_path": str(Path(config_path).resolve()),
-        "run": {
-            "project_root": str(project_root),
-            "state_dir": str(state_dir),
-            "max_steps": max_steps,
-        },
-        "executor": {"cmd": executor_cmd},
-        "context": {"defaults": merged_defaults_context},
+        "run": run_cfg,
+        "executor": executor_cfg,
+        "context": {"defaults": context_defaults},
         "workflow": {"start": start_node, "nodes": nodes},
     }
 
@@ -440,13 +549,12 @@ def load_config(
 @task
 def build_prompt_inputs(node: dict[str, Any], runtime_state: dict[str, Any]) -> dict[str, Any]:
     prompt_inputs: dict[str, Any] = {}
-    input_map = node.get("input_map", {})
-    input_map_parts = node.get("input_map_parts")
-    if input_map_parts is None:
-        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled input_map_parts")
-    for key, source_parts in input_map_parts.items():
-        source_path = input_map[key]
-        prompt_inputs[key] = resolve_dotted_parts(runtime_state, source_parts, source_path)
+    for binding in get_compiled_input_bindings(node):
+        prompt_inputs[binding["input_key"]] = resolve_dotted_parts(
+            runtime_state,
+            binding["source_parts"],
+            binding["source"],
+        )
     return prompt_inputs
 
 
@@ -657,23 +765,15 @@ def resolve_node_output(raw_output: str, parse_output_json: bool) -> tuple[Any, 
 
 
 @task
-def resolve_next_node(node: dict[str, Any], pass_flag: bool, existing_node_ids: list[str]) -> str:
-    next_node = node["on_success"] if pass_flag else node["on_failure"]
-    if next_node == END_NODE:
-        return END_NODE
-    if next_node not in existing_node_ids:
-        raise RuntimeError(f"Node '{node['id']}' routes to missing node: {next_node}")
-    return next_node
+def resolve_next_node(node: dict[str, Any], pass_flag: bool) -> str:
+    return node["on_success"] if pass_flag else node["on_failure"]
 
 
 @task
 def apply_route_bindings(node: dict[str, Any], pass_flag: bool, runtime_state: dict[str, Any]) -> dict[str, str]:
     route_name = "success" if pass_flag else "failure"
-    bindings_parts = node.get("route_bindings_parts", {}).get(route_name)
-    if bindings_parts is None:
-        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' missing compiled route_bindings_parts")
     applied: dict[str, str] = {}
-    for binding in bindings_parts:
+    for binding in get_compiled_route_bindings(node, route_name):
         target_path = binding["target"]
         source_path = binding["source"]
         value = resolve_dotted_parts(runtime_state, binding["source_parts"], source_path)
@@ -709,68 +809,285 @@ def collect_output_history(
     node_output: Any,
     runtime_state: dict[str, Any],
 ) -> str | None:
-    target_path = node.get("collect_history_to")
-    if not target_path:
+    history_target = get_compiled_history_target(node)
+    if history_target is None:
         return None
-    current = ensure_history_list(runtime_state, target_path, node.get("collect_history_to_parts"))
+    target_path = history_target["target"]
+    current = ensure_history_list(runtime_state, target_path, history_target["target_parts"])
     current.append(copy.deepcopy(node_output))
     return target_path
 
 
 def initialize_history_targets(workflow_nodes: list[dict[str, Any]], runtime_state: dict[str, Any]) -> None:
     for node in workflow_nodes:
-        target_path = node.get("collect_history_to")
-        if not target_path:
+        history_target = get_compiled_history_target(node)
+        if history_target is None:
             continue
-        ensure_history_list(runtime_state, target_path, node.get("collect_history_to_parts"))
+        ensure_history_list(
+            runtime_state,
+            history_target["target"],
+            history_target["target_parts"],
+        )
 
 
-@task
-def persist_state_and_logs(
-    state_dir: str,
+def build_runtime_snapshot(
+    runtime_state: dict[str, Any],
+    attempt_counter: dict[str, int],
+    current_node: str,
     step: int,
-    node_id: str,
-    attempt: int,
-    next_node: str,
-    pass_flag: bool,
-    rendered_prompt: str,
-    raw_output_path: str,
-    node_output: Any,
-    codex_log_path: str,
-    applied_route_bindings: dict[str, str],
-) -> dict[str, str]:
-    state_root = Path(state_dir)
-    prefix = build_step_prefix(step, node_id, attempt)
-
-    prompt_path = state_root / f"{prefix}__prompt.txt"
-    parsed_path = state_root / f"{prefix}__parsed.json"
-    meta_path = state_root / f"{prefix}__meta.json"
-    history_path = state_root / "history.jsonl"
-
-    write_text(prompt_path, rendered_prompt)
-    write_json(parsed_path, node_output)
-    meta_payload = {
+    max_steps: int,
+) -> dict[str, Any]:
+    return {
+        "current_node": current_node,
         "step": step,
-        "node_id": node_id,
-        "attempt": attempt,
-        "pass": pass_flag,
-        "next_node": next_node,
-        "prompt_path": str(prompt_path),
-        "raw_output_path": raw_output_path,
-        "parsed_output_path": str(parsed_path),
-        "codex_log_path": codex_log_path,
-        "applied_route_bindings": applied_route_bindings,
+        "max_steps": max_steps,
+        "context": runtime_state["context"],
+        "outputs": runtime_state["outputs"],
+        "attempt_counter": attempt_counter,
+    }
+
+
+def write_runtime_snapshot(run_state_dir: Path, runtime_snapshot: dict[str, Any]) -> None:
+    write_json(run_state_dir / "runtime_state.json", runtime_snapshot)
+
+
+def prepare_run_workspace(run_cfg: dict[str, Any]) -> dict[str, Any]:
+    project_root = Path(run_cfg["project_root"])
+    state_dir = Path(run_cfg["state_dir"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    run_id = make_run_id()
+    run_state_dir = state_dir / "runs" / run_id
+    run_state_dir.mkdir(parents=True, exist_ok=True)
+    run_log_dir = run_state_dir / "logs" / f"workflow__{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_log_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[logs] task log dir: {run_log_dir}", flush=True)
+    return {
+        "project_root": project_root,
+        "state_dir": state_dir,
+        "run_id": run_id,
+        "run_state_dir": run_state_dir,
+        "run_log_dir": run_log_dir,
+    }
+
+
+def create_runtime_state(default_context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "context": {"defaults": default_context, "runtime": {}},
+        "outputs": {},
+    }
+
+
+class RunExecutionContext(NamedTuple):
+    config: dict[str, Any]
+    project_root: Path
+    run_state_dir: Path
+    run_log_dir: Path
+    max_steps: int
+    runtime_state: dict[str, Any]
+    attempt_counter: dict[str, int]
+
+
+class WorkflowStepContext(NamedTuple):
+    node: dict[str, Any]
+    node_id: str
+    step: int
+    attempt: int
+
+
+class StepArtifactsPlan(NamedTuple):
+    prefix: str
+    raw_output_path: Path
+    prompt_path: Path
+    parsed_path: Path
+    meta_path: Path
+    history_path: Path
+
+
+class StepExecutionResult(NamedTuple):
+    rendered_prompt: str
+    raw_output_path: Path
+    codex_log_path: str
+    node_output: Any
+    pass_flag: bool
+    next_node: str
+    applied_route_bindings: dict[str, str]
+
+
+def next_attempt(attempt_counter: dict[str, int], node_id: str) -> int:
+    attempt = attempt_counter.get(node_id, 0) + 1
+    attempt_counter[node_id] = attempt
+    return attempt
+
+
+def build_step_context(
+    *,
+    node: dict[str, Any],
+    node_id: str,
+    step: int,
+    attempt_counter: dict[str, int],
+) -> WorkflowStepContext:
+    return WorkflowStepContext(
+        node=node,
+        node_id=node_id,
+        step=step,
+        attempt=next_attempt(attempt_counter, node_id),
+    )
+
+
+def plan_step_artifacts(run_state_dir: Path, step_ctx: WorkflowStepContext) -> StepArtifactsPlan:
+    prefix = build_step_prefix(step_ctx.step, step_ctx.node_id, step_ctx.attempt)
+    return StepArtifactsPlan(
+        prefix=prefix,
+        raw_output_path=run_state_dir / f"{prefix}__raw.txt",
+        prompt_path=run_state_dir / f"{prefix}__prompt.txt",
+        parsed_path=run_state_dir / f"{prefix}__parsed.json",
+        meta_path=run_state_dir / f"{prefix}__meta.json",
+        history_path=run_state_dir / "history.jsonl",
+    )
+
+
+def execute_step_node(
+    *,
+    run_ctx: RunExecutionContext,
+    step_ctx: WorkflowStepContext,
+    artifacts: StepArtifactsPlan,
+) -> StepExecutionResult:
+    node = step_ctx.node
+
+    prompt_inputs = build_prompt_inputs(node, run_ctx.runtime_state)
+    rendered = render_prompt(
+        node["prompt"],
+        prompt_inputs,
+        run_ctx.config["config_path"],
+        node["id"],
+        node["prompt_field"],
+    )
+
+    codex_log_path = run_codex_exec(
+        str(run_ctx.project_root),
+        run_ctx.config["executor"]["cmd"],
+        rendered,
+        str(artifacts.raw_output_path),
+        str(run_ctx.run_log_dir),
+        step_ctx.node_id,
+        step_ctx.step,
+        step_ctx.attempt,
+    )
+
+    raw_output = read_text(artifacts.raw_output_path)
+    node_output, pass_flag = resolve_node_output(raw_output, node["parse_output_json"])
+    run_ctx.runtime_state["outputs"][step_ctx.node_id] = node_output
+    collect_output_history(node, node_output, run_ctx.runtime_state)
+
+    next_node = resolve_next_node(node, pass_flag)
+    applied_route_bindings = apply_route_bindings(node, pass_flag, run_ctx.runtime_state)
+    return StepExecutionResult(
+        rendered_prompt=rendered,
+        raw_output_path=artifacts.raw_output_path,
+        codex_log_path=codex_log_path,
+        node_output=node_output,
+        pass_flag=pass_flag,
+        next_node=next_node,
+        applied_route_bindings=applied_route_bindings,
+    )
+
+
+def build_meta_payload(
+    *,
+    step_ctx: WorkflowStepContext,
+    step_result: StepExecutionResult,
+    artifacts: StepArtifactsPlan,
+) -> dict[str, Any]:
+    return {
+        "step": step_ctx.step,
+        "node_id": step_ctx.node_id,
+        "attempt": step_ctx.attempt,
+        "pass": step_result.pass_flag,
+        "next_node": step_result.next_node,
+        "prompt_path": str(artifacts.prompt_path),
+        "raw_output_path": str(step_result.raw_output_path),
+        "parsed_output_path": str(artifacts.parsed_path),
+        "codex_log_path": step_result.codex_log_path,
+        "applied_route_bindings": step_result.applied_route_bindings,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
-    write_json(meta_path, meta_payload)
-    with history_path.open("a", encoding="utf-8") as history:
-        history.write(json.dumps(meta_payload, ensure_ascii=False) + "\n")
 
+
+def persist_step_artifacts(
+    *,
+    artifacts: StepArtifactsPlan,
+    rendered_prompt: str,
+    node_output: Any,
+    meta_payload: dict[str, Any],
+    runtime_snapshot: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    write_text(artifacts.prompt_path, rendered_prompt)
+    write_json(artifacts.parsed_path, node_output)
+    write_json(artifacts.meta_path, meta_payload)
+    with artifacts.history_path.open("a", encoding="utf-8") as history:
+        history.write(json.dumps(meta_payload, ensure_ascii=False) + "\n")
+    if runtime_snapshot is not None:
+        write_runtime_snapshot(artifacts.history_path.parent, runtime_snapshot)
     return {
-        "prompt_path": str(prompt_path),
-        "parsed_path": str(parsed_path),
-        "meta_path": str(meta_path),
+        "prompt_path": str(artifacts.prompt_path),
+        "parsed_path": str(artifacts.parsed_path),
+        "meta_path": str(artifacts.meta_path),
     }
+
+
+def execute_workflow_step(
+    *,
+    run_ctx: RunExecutionContext,
+    step_ctx: WorkflowStepContext,
+) -> str:
+    artifacts = plan_step_artifacts(run_ctx.run_state_dir, step_ctx)
+    step_result = execute_step_node(
+        run_ctx=run_ctx,
+        step_ctx=step_ctx,
+        artifacts=artifacts,
+    )
+    meta_payload = build_meta_payload(
+        step_ctx=step_ctx,
+        step_result=step_result,
+        artifacts=artifacts,
+    )
+    persist_step_artifacts(
+        artifacts=artifacts,
+        rendered_prompt=step_result.rendered_prompt,
+        node_output=step_result.node_output,
+        meta_payload=meta_payload,
+        runtime_snapshot=build_runtime_snapshot(
+            run_ctx.runtime_state,
+            run_ctx.attempt_counter,
+            step_result.next_node,
+            step_ctx.step,
+            run_ctx.max_steps,
+        ),
+    )
+    return step_result.next_node
+
+
+def finalize_run_outputs(
+    *,
+    run_id: str,
+    run_state_dir: Path,
+    state_dir: Path,
+    final_node: str,
+    steps_executed: int,
+    outputs: dict[str, Any],
+) -> dict[str, Any]:
+    final_summary = {
+        "status": "completed",
+        "run_id": run_id,
+        "run_state_dir": str(run_state_dir),
+        "final_node": final_node,
+        "steps_executed": steps_executed,
+        "outputs": outputs,
+    }
+    write_json(run_state_dir / "run_summary.json", final_summary)
+    write_json(state_dir / "latest_run.json", {"run_id": run_id, "run_state_dir": str(run_state_dir)})
+    write_text(state_dir / "latest_run_id", f"{run_id}\n")
+    return final_summary
 
 
 @flow(name="codex_orchestrator")
@@ -782,110 +1099,57 @@ def run_workflow(
     config = load_config(config_path, context_overrides, launch_cwd)
 
     run_cfg = config["run"]
-    project_root = Path(run_cfg["project_root"])
-    state_dir = Path(run_cfg["state_dir"])
-    state_dir.mkdir(parents=True, exist_ok=True)
-    run_id = make_run_id()
-    run_state_dir = state_dir / "runs" / run_id
-    run_state_dir.mkdir(parents=True, exist_ok=True)
-    run_log_dir = run_state_dir / "logs" / f"workflow__{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    run_log_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[logs] task log dir: {run_log_dir}", flush=True)
+    run_workspace = prepare_run_workspace(run_cfg)
+    project_root = run_workspace["project_root"]
+    state_dir = run_workspace["state_dir"]
+    run_id = run_workspace["run_id"]
+    run_state_dir = run_workspace["run_state_dir"]
+    run_log_dir = run_workspace["run_log_dir"]
 
     workflow = config["workflow"]
     nodes_by_id = {node["id"]: node for node in workflow["nodes"]}
-    node_ids = list(nodes_by_id.keys())
 
-    runtime_state: dict[str, Any] = {
-        "context": {"defaults": config["context"]["defaults"], "runtime": {}},
-        "outputs": {},
-    }
+    runtime_state = create_runtime_state(config["context"]["defaults"])
     initialize_history_targets(workflow["nodes"], runtime_state)
     attempt_counter: dict[str, int] = {}
     steps_executed = 0
 
     current_node_id = workflow["start"]
     max_steps = run_cfg["max_steps"]
-    for step in range(1, max_steps + 1):
-        if current_node_id == END_NODE:
-            break
-
+    run_ctx = RunExecutionContext(
+        config=config,
+        project_root=project_root,
+        run_state_dir=run_state_dir,
+        run_log_dir=run_log_dir,
+        max_steps=max_steps,
+        runtime_state=runtime_state,
+        attempt_counter=attempt_counter,
+    )
+    while steps_executed < max_steps and current_node_id != END_NODE:
+        step = steps_executed + 1
         node = nodes_by_id[current_node_id]
-        attempt = attempt_counter.get(current_node_id, 0) + 1
-        attempt_counter[current_node_id] = attempt
+        step_ctx = build_step_context(
+            node=node,
+            node_id=current_node_id,
+            step=step,
+            attempt_counter=attempt_counter,
+        )
+        current_node_id = execute_workflow_step(
+            run_ctx=run_ctx,
+            step_ctx=step_ctx,
+        )
         steps_executed += 1
-
-        prompt_inputs = build_prompt_inputs(node, runtime_state)
-        rendered = render_prompt(
-            node["prompt"],
-            prompt_inputs,
-            config["config_path"],
-            node["id"],
-            node["prompt_field"],
-        )
-
-        raw_output_path = run_state_dir / f"{build_step_prefix(step, current_node_id, attempt)}__raw.txt"
-        codex_log_path = run_codex_exec(
-            str(project_root),
-            config["executor"]["cmd"],
-            rendered,
-            str(raw_output_path),
-            str(run_log_dir),
-            current_node_id,
-            step,
-            attempt,
-        )
-
-        raw_output = read_text(raw_output_path)
-        node_output, pass_flag = resolve_node_output(raw_output, node["parse_output_json"])
-        runtime_state["outputs"][current_node_id] = node_output
-        collect_output_history(node, node_output, runtime_state)
-
-        next_node = resolve_next_node(node, pass_flag, node_ids)
-        applied_route_bindings = apply_route_bindings(node, pass_flag, runtime_state)
-        persist_state_and_logs(
-            str(run_state_dir),
-            step,
-            current_node_id,
-            attempt,
-            next_node,
-            pass_flag,
-            rendered,
-            str(raw_output_path),
-            node_output,
-            codex_log_path,
-            applied_route_bindings,
-        )
-
-        write_json(
-            run_state_dir / "runtime_state.json",
-            {
-                "current_node": next_node,
-                "step": step,
-                "max_steps": max_steps,
-                "context": runtime_state["context"],
-                "outputs": runtime_state["outputs"],
-                "attempt_counter": attempt_counter,
-            },
-        )
-        current_node_id = next_node
-        if current_node_id == END_NODE:
-            break
-    else:
+    if current_node_id != END_NODE:
         raise RuntimeError(f"Reached max_steps without END: {max_steps}")
 
-    final_summary = {
-        "status": "completed",
-        "run_id": run_id,
-        "run_state_dir": str(run_state_dir),
-        "final_node": current_node_id,
-        "steps_executed": steps_executed,
-        "outputs": runtime_state["outputs"],
-    }
-    write_json(run_state_dir / "run_summary.json", final_summary)
-    write_json(state_dir / "latest_run.json", {"run_id": run_id, "run_state_dir": str(run_state_dir)})
-    write_text(state_dir / "latest_run_id", f"{run_id}\n")
-    return final_summary
+    return finalize_run_outputs(
+        run_id=run_id,
+        run_state_dir=run_state_dir,
+        state_dir=state_dir,
+        final_node=current_node_id,
+        steps_executed=steps_executed,
+        outputs=runtime_state["outputs"],
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -905,36 +1169,48 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def format_missing_dependency_error() -> str | None:
+    dependency_errors = (
+        ("prefect", PREFECT_IMPORT_ERROR),
+        ("pyyaml", YAML_IMPORT_ERROR),
+        ("jinja2", JINJA_IMPORT_ERROR),
+    )
+    for dep_name, dep_error in dependency_errors:
+        if dep_error is not None:
+            return f"Missing dependency: {dep_name} ({dep_error})"
+    return None
+
+
+def fail_with_stderr(message: str) -> int:
+    print(message, file=sys.stderr)
+    return 2
+
+
+def resolve_main_config(preset: str, context_pairs: list[list[str]] | None) -> tuple[Path, dict[str, str]]:
+    context_overrides = parse_context_overrides(context_pairs)
+    config_path = resolve_preset_path(preset)
+    if not config_path.is_file():
+        raise RuntimeError(f"Config file not found: {config_path}")
+    return config_path, context_overrides
+
+
 def main() -> int:
     args = parse_args()
 
-    if PREFECT_IMPORT_ERROR is not None:
-        print(f"Missing dependency: prefect ({PREFECT_IMPORT_ERROR})", file=sys.stderr)
-        return 2
-    if YAML_IMPORT_ERROR is not None:
-        print(f"Missing dependency: pyyaml ({YAML_IMPORT_ERROR})", file=sys.stderr)
-        return 2
-    if JINJA_IMPORT_ERROR is not None:
-        print(f"Missing dependency: jinja2 ({JINJA_IMPORT_ERROR})", file=sys.stderr)
-        return 2
+    missing_dependency = format_missing_dependency_error()
+    if missing_dependency is not None:
+        return fail_with_stderr(missing_dependency)
 
     try:
-        context_overrides = parse_context_overrides(args.context)
-        config_path = resolve_preset_path(args.preset)
+        config_path, context_overrides = resolve_main_config(args.preset, args.context)
     except Exception as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-
-    if not config_path.is_file():
-        print(f"Config file not found: {config_path}", file=sys.stderr)
-        return 2
+        return fail_with_stderr(str(exc))
 
     try:
         launch_cwd = str(Path.cwd().resolve())
         run_workflow(str(config_path), context_overrides, launch_cwd)
     except Exception as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+        return fail_with_stderr(str(exc))
     return 0
 
 
