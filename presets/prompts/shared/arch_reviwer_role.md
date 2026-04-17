@@ -13,6 +13,7 @@ From code signals, deduce likely goal:
 * Duplicate logic → **deduplication, branch convergence, lower maintenance cost**
 * Deep nesting / complex conditionals → **flatten control flow, improve readability**
 * Repeated traversal / redundant state → **streamline data pipeline, eliminate waste**
+* Large function, class, file → **split into cohesive units, reduce cognitive load**
 * Already fine-grained functions → **optimize structure clarity, not further decomposition**
 * Conservative style → favor **low-risk, high-impact incremental changes**
 
@@ -49,8 +50,9 @@ Evaluate:
 1. Deduplicable logic
 2. Excessive nesting → flattening opportunities
 3. Redundant state, traversal, or processing
-4. Structures obscuring core flow
-5. Patterns increasing long-term maintenance cost
+4. Large function, class, file
+5. Structures obscuring core flow
+6. Patterns increasing long-term maintenance cost
 
 Ignore unrelated topics.
 
@@ -87,7 +89,7 @@ Format: **Issue → Cause**
 Constraints:
 
 * Sorted by impact
-* ≤5 items (prefer ≤3)
+* ≤5 items
 * Each maps to a concrete structure/pattern
 * No redundancy
 * No large code rewrites unless essential
