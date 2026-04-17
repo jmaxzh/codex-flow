@@ -27,3 +27,11 @@
 - [x] 4.2 Document the no-compatibility policy: legacy tool usage is unsupported after this change.
 - [x] 4.3 Document version authority rule: pre-commit hook `rev` is authoritative for external hook repos and dependency-file pins must match it; clarify non-applicability to `repo: local` hooks.
 - [x] 4.4 Add a lightweight validation step/checklist ensuring hook `rev` and dependency pins stay aligned whenever hook revisions change.
+
+## 5. Maintainability Hardening (No-Ignore + Complexity + File Size)
+
+- [x] 5.1 Remove Ruff ignore exemptions from managed scope (`scripts/`, `tests/`) and eliminate code patterns that required them.
+- [x] 5.2 Enforce Ruff maintainability thresholds in `pyproject.toml`: `C901 <= 10`, `max-statements = 50`, `max-branches = 10`, `max-returns = 6`, `max-args = 6`.
+- [x] 5.3 Add a repository-local gate hook that fails when any `scripts/*.py` exceeds 500 lines, and bind it to both `pre-commit` and `pre-push`.
+- [x] 5.4 Add a repository-local gate hook that fails on inline suppressions (`# noqa`, `# type: ignore`) in `scripts/` and `tests/`, and bind it to both `pre-commit` and `pre-push`.
+- [x] 5.5 Run full gate verification (`pre-commit` + `pre-push`, Ruff, basedpyright, targeted tests) and mark hardening complete.

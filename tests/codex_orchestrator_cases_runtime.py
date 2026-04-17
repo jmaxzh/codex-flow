@@ -41,8 +41,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             tmp_path = Path(tmp)
             config_path = self.write_workflow_config(
                 tmp_path,
-                project_root=tmp_path,
-                max_steps=6,
+                run_args={"project_root": tmp_path, "max_steps": 6},
                 defaults={"user_instruction": "first pass", "spec": "s"},
                 start="implement_first",
                 nodes=[
@@ -114,8 +113,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             tmp_path = Path(tmp)
             config_path = self.write_workflow_config(
                 tmp_path,
-                project_root=tmp_path,
-                max_steps=1,
+                run_args={"project_root": tmp_path, "max_steps": 1},
                 defaults={"spec": "s"},
                 start="n1",
                 nodes=[
@@ -157,8 +155,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             tmp_path = Path(tmp)
             config_path = self.write_workflow_config(
                 tmp_path,
-                project_root=tmp_path,
-                max_steps=3,
+                run_args={"project_root": tmp_path, "max_steps": 3},
                 defaults={},
                 start="implement",
                 nodes=[
@@ -202,8 +199,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             tmp_path = Path(tmp)
             config_path = self.write_workflow_config(
                 tmp_path,
-                project_root=tmp_path,
-                max_steps=1,
+                run_args={"project_root": tmp_path, "max_steps": 1},
                 defaults={},
                 start="implement",
                 nodes=[
@@ -260,8 +256,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             tmp_path = Path(tmp)
             config_path = self.write_workflow_config(
                 tmp_path,
-                project_root=tmp_path,
-                max_steps=3,
+                run_args={"project_root": tmp_path, "max_steps": 3},
                 defaults={},
                 start="review",
                 nodes=[
@@ -313,8 +308,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             tmp_path = Path(tmp)
             config_path = self.write_workflow_config(
                 tmp_path,
-                project_root=tmp_path,
-                max_steps=1,
+                run_args={"project_root": tmp_path, "max_steps": 1},
                 defaults={},
                 start="review",
                 nodes=[
@@ -353,8 +347,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             tmp_path = Path(tmp)
             config_path = self.write_workflow_config(
                 tmp_path,
-                project_root=tmp_path,
-                max_steps=3,
+                run_args={"project_root": tmp_path, "max_steps": 3},
                 defaults={},
                 start="review",
                 nodes=[
@@ -393,8 +386,7 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             tmp_path = Path(tmp)
             config_path = self.write_workflow_config(
                 tmp_path,
-                project_root=tmp_path,
-                max_steps=2,
+                run_args={"project_root": tmp_path, "max_steps": 2},
                 defaults={},
                 start="check",
                 nodes=[

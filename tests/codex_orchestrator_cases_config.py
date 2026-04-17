@@ -18,8 +18,7 @@ class ConfigValidationTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unittest
 
     def _minimal_valid_config(self, project_root: str) -> dict[str, Any]:
         return self.build_workflow_payload(
-            project_root=project_root,
-            max_steps=3,
+            run_args={"project_root": project_root, "max_steps": 3},
             defaults={"spec": "ok"},
             start="n1",
             nodes=[

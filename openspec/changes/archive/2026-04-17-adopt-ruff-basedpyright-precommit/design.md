@@ -4,6 +4,8 @@ This repository includes Python automation logic and tests but lacks a unified q
 
 The chosen stack is Ruff + basedpyright + pre-commit, applied as a hard cutover with no compatibility layer. The implementation must make local checks and CI checks identical.
 
+This extension also hardens maintainability policy: avoid ignore-based rule bypassing, enforce complexity thresholds, and prevent oversized `scripts/` modules from reappearing.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -12,11 +14,15 @@ The chosen stack is Ruff + basedpyright + pre-commit, applied as a hard cutover 
 - Fail fast on warnings and errors to guarantee deterministic quality outcomes.
 - Remove redundant legacy tooling and prevent split-brain quality policies.
 - Freeze execution baseline to Python 3.13 in CI and tool configuration to keep diagnostics deterministic.
+- Enforce maintainability thresholds on complexity and function size/shape.
+- Enforce a no-ignore policy for quality gates in `scripts/` and `tests/`.
+- Add executable file-size guardrails for `scripts/*.py` to keep orchestrator code decomposed.
 
 **Non-Goals:**
 - Gradual migration using baselines, soft-fail modes, or temporary ignores for backward compatibility.
 - Supporting multiple concurrent Python quality stacks.
 - Broad refactoring beyond what is needed to satisfy the new quality gate.
+- Introducing per-file exception registries as a first-line mechanism for quality compliance.
 
 ## Decisions
 
@@ -77,9 +83,28 @@ The chosen stack is Ruff + basedpyright + pre-commit, applied as a hard cutover 
 - Alternative considered: ad-hoc floating installs in workflow steps.
 - Rejected because it can bypass repository pins and introduce non-reproducible diagnostics.
 
+11. Enforce complexity and function-structure guardrails in Ruff.
+- Decision: enable `C901` with `max-complexity = 10`, plus Pylint-derived thresholds: `max-statements = 50`, `max-branches = 10`, `max-returns = 6`, `max-args = 6`.
+- Rationale: these limits catch monolithic control-flow and oversized APIs early while remaining achievable for orchestration code.
+- Alternative considered: advisory-only documentation and code-review policing.
+- Rejected because non-executable policy drifts quickly and fails to block regressions.
+
+12. Enforce no-ignore policy in managed Python paths.
+- Decision: ban quality-gate ignore mechanisms in `scripts/` and `tests/`, including Ruff `per-file-ignores`, global lint ignores, inline `# noqa`, and inline `# type: ignore` by default.
+- Rationale: ignore growth silently erodes the gate and hides debt.
+- Alternative considered: allow discretionary ignores with reviewer approval.
+- Rejected because approval-only governance is inconsistent and hard to audit.
+
+13. Add executable script size gate for `scripts/*.py`.
+- Decision: add a repository-local pre-commit hook that fails when any Python file in `scripts/` exceeds 500 physical lines.
+- Rationale: direct executable guardrail prevents single-file orchestrators from regressing into thousand-line modules.
+- Alternative considered: ratchet on only one file (`scripts/codex_automation_loops.py`) or pure review guidance.
+- Rejected because single-file ratchets are brittle when files are renamed and review guidance is not enforceable.
+
 ## Risks / Trade-offs
 
 - [Initial migration breakage] Existing code may fail strict lint/type gates immediately. → Mitigation: perform a single remediation pass in the same change before enabling gate in CI.
 - [Developer friction increase] Hard gate on commit/push may slow early iterations. → Mitigation: keep hooks fast, run Ruff auto-fix first in `pre-commit`, and document canonical stage commands.
 - [Dependency compatibility drift] Future tool releases may change diagnostics. → Mitigation: pin versions and upgrade intentionally via dedicated maintenance changes.
 - [False positives in strict typing] Strict inference may flag legitimate dynamic patterns. → Mitigation: require explicit typing patterns or narrow, justified inline suppressions.
+- [Overly strict maintainability limits] Some legitimate high-branch orchestration logic may need decomposition effort. → Mitigation: split logic into internal modules and helpers instead of adding ignores.

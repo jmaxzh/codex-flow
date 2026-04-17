@@ -4,8 +4,16 @@ line-length = 130
 src = ["scripts", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP"]
-per-file-ignores = { "tests/test_codex_orchestrator.py" = ["E402"] }
+select = ["E", "F", "W", "I", "UP", "C90", "PLR0912", "PLR0911", "PLR0913", "PLR0915"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-branches = 10
+max-returns = 6
+max-args = 6
+max-statements = 50
 
 [tool.ruff.format]
 quote-style = "double"

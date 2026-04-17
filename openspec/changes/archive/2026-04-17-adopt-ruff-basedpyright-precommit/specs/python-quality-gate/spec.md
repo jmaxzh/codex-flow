@@ -24,6 +24,18 @@ The repository MUST configure Ruff to enforce linting and formatting for all Pyt
 - **THEN** Ruff mutating hooks (lint autofix and formatter write mode) run only in `pre-commit` stage
 - **AND** `pre-push` stage runs only non-mutating Ruff checks
 
+#### Scenario: Ruff complexity thresholds are enforced
+- **WHEN** a function exceeds McCabe complexity 10 (`C901`)
+- **THEN** Ruff fails the gate until the function is simplified
+
+#### Scenario: Ruff function-shape thresholds are enforced
+- **WHEN** Python code under managed scope exceeds configured thresholds
+- **THEN** Ruff fails the gate for any of the following cases:
+- **AND** statements exceed 50 (`PLR0915`)
+- **AND** branches exceed 10 (`PLR0912`)
+- **AND** returns exceed 6 (`PLR0911`)
+- **AND** positional parameters exceed 6 (`PLR0913`)
+
 ### Requirement: Strict Type Checking with basedpyright
 The repository MUST enforce basedpyright in strict mode with warnings treated as failures.
 
@@ -92,3 +104,24 @@ The repository MUST define Python 3.13 as the runtime baseline for the Python qu
 - **AND** `tool.basedpyright.pythonVersion` is set to `3.13`
 - **AND** `tool.ruff.target-version` is set to `py313`
 - **AND** pre-commit hook runtime is pinned via `default_language_version.python: python3.13`
+
+### Requirement: Zero Ignore Policy for Managed Python Scope
+The repository MUST enforce quality compliance in `scripts/` and `tests/` without ignore-based bypasses.
+
+#### Scenario: Ruff ignore configuration is disallowed
+- **WHEN** Ruff configuration is inspected for managed scope
+- **THEN** no `per-file-ignores` are configured
+- **AND** no global ignore or extend-ignore list is configured for managed paths
+
+#### Scenario: Inline lint/type suppression is disallowed
+- **WHEN** Python files under `scripts/` and `tests/` are scanned
+- **THEN** no inline `# noqa` suppression is present
+- **AND** no inline `# type: ignore` suppression is present
+
+### Requirement: Script File Size Gate
+The repository MUST enforce a maximum file size for Python files under `scripts/`.
+
+#### Scenario: Script module exceeds size threshold
+- **WHEN** any `scripts/*.py` file exceeds 500 physical lines
+- **THEN** the quality gate fails in both `pre-commit` and `pre-push` stages
+- **AND** the failure output identifies offending files and line counts

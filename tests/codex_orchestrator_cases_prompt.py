@@ -201,8 +201,7 @@ class PromptPathResolutionWorkflowTests(PatchedYamlMixin, unittest.TestCase):
     def _write_workflow_config(self, config_path: Path, project_root: Path) -> None:
         WorkflowTestFactoryMixin().write_workflow_config_at(
             config_path,
-            project_root=project_root,
-            max_steps=1,
+            run_args={"project_root": project_root, "max_steps": 1},
             defaults={"k": "v"},
             start="n1",
             nodes=[

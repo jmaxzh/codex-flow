@@ -81,6 +81,12 @@ pre-commit run --all-files --hook-stage pre-push
 
 这两条命令与 CI 质量门禁完全一致，且都以 `scripts/` 与 `tests/` 为全量检查范围（不是仅检查改动文件）。
 
+### 维护性硬门禁
+
+- 禁止使用忽略策略绕过门禁：不允许 Ruff `per-file-ignores`、`ignore/extend-ignore`，不允许在 `scripts/` 与 `tests/` 中出现 `# noqa`、`# type: ignore`。
+- Ruff 复杂度阈值：`C901 <= 10`、`max-statements = 50`、`max-branches = 10`、`max-returns = 6`、`max-args = 6`。
+- `scripts/*.py` 文件大小阈值：单文件最多 500 行，由本地 gate hook 强制执行（`scripts-size-gate`）。
+
 ### 版本对齐规则
 
 - 对外部 hook 仓库（非 `repo: local`），`.pre-commit-config.yaml` 中 hook `rev` 是执行时权威版本。

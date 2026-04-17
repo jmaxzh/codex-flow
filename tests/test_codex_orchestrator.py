@@ -1,3 +1,4 @@
+import importlib
 import inspect
 import sys
 import unittest
@@ -7,21 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tests import (
-    codex_orchestrator_cases_config as cases_config,
-)
-from tests import (
-    codex_orchestrator_cases_core as cases_core,
-)
-from tests import (
-    codex_orchestrator_cases_presets_cli as cases_presets_cli,
-)
-from tests import (
-    codex_orchestrator_cases_prompt as cases_prompt,
-)
-from tests import (
-    codex_orchestrator_cases_runtime as cases_runtime,
-)
+cases_config = importlib.import_module("tests.codex_orchestrator_cases_config")
+cases_core = importlib.import_module("tests.codex_orchestrator_cases_core")
+cases_presets_cli = importlib.import_module("tests.codex_orchestrator_cases_presets_cli")
+cases_prompt = importlib.import_module("tests.codex_orchestrator_cases_prompt")
+cases_runtime = importlib.import_module("tests.codex_orchestrator_cases_runtime")
 
 CASE_MODULES = (
     cases_config,

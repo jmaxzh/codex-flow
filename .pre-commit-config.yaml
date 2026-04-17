@@ -44,3 +44,17 @@ repos:
         always_run: true
         pass_filenames: false
         stages: [pre-commit, pre-push]
+      - id: scripts-size-gate
+        name: scripts-size-gate
+        entry: python3 scripts/quality_gate/check_scripts_file_size.py
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+      - id: no-inline-suppressions
+        name: no-inline-suppressions
+        entry: python3 scripts/quality_gate/check_no_inline_suppressions.py
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
