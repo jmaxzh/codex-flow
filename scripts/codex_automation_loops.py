@@ -53,6 +53,7 @@ from _codex_orchestrator.runtime import (
     persist_step_artifacts,
     plan_step_artifacts,
     prepare_run_workspace,
+    resolve_success_next_node,
 )
 from _codex_orchestrator.runtime import (
     apply_route_bindings as _apply_route_bindings_impl,
@@ -266,6 +267,13 @@ def execute_step_node(
     collect_output_history(node, node_output, run_ctx.runtime_state)
 
     next_node = resolve_next_node(node, pass_flag)
+    next_node = resolve_success_next_node(
+        node=node,
+        pass_flag=pass_flag,
+        default_next_node=next_node,
+        runtime_state=run_ctx.runtime_state,
+        node_ids=run_ctx.node_ids,
+    )
     applied_route_bindings = apply_route_bindings(node, pass_flag, run_ctx.runtime_state)
     return StepExecutionResult(
         rendered_prompt=rendered,
@@ -344,6 +352,7 @@ def run_workflow(
         max_steps=max_steps,
         runtime_state=runtime_state,
         attempt_counter=attempt_counter,
+        node_ids=set(nodes_by_id),
     )
     while steps_executed < max_steps and current_node_id != END_NODE:
         step = steps_executed + 1

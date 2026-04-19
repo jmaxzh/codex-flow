@@ -73,6 +73,52 @@ class BuiltinPresetWiringTests(unittest.TestCase):
             history_key="doc_review_history",
         )
 
+    def test_doc_doctor_wiring_composes_review_and_fix_loop(self):
+        config = module.load_config(str(ROOT / "presets" / "doc_doctor.yaml"), {})
+        nodes = {node["id"]: node for node in config["workflow"]["nodes"]}
+
+        self.assertEqual(config["workflow"]["start"], "doc_reviwer")
+        self.assertEqual(set(nodes), {"doc_reviwer", "doc_fix"})
+
+        review = nodes["doc_reviwer"]
+        self.assertEqual(review["on_success"], "END")
+        self.assertEqual(review["on_failure"], "doc_reviwer")
+        self.assertEqual(review["success_next_node_from"], "context.runtime.doc_review_next_node")
+        self.assertEqual(review["collect_history_to"], "context.runtime.doc_review_history")
+        self.assertEqual(
+            review["route_bindings"]["failure"],
+            {"context.runtime.doc_review_next_node": "context.defaults.doc_review_fix_node"},
+        )
+        self.assertEqual(review["route_bindings"]["success"], {})
+
+        doc_fix = nodes["doc_fix"]
+        self.assertFalse(doc_fix["parse_output_json"])
+        self.assertEqual(doc_fix["on_success"], "doc_reviwer")
+        self.assertEqual(doc_fix["on_failure"], "END")
+        self.assertEqual(
+            doc_fix["input_map"],
+            {
+                "user_instruction": "context.defaults.user_instruction",
+                "doc_review_history": "context.runtime.doc_review_history",
+            },
+        )
+        self.assertIsNone(doc_fix["collect_history_to"])
+        self.assertEqual(
+            doc_fix["route_bindings"]["success"],
+            {"context.runtime.doc_review_next_node": "context.defaults.doc_review_end_node"},
+        )
+        self.assertEqual(doc_fix["route_bindings"]["failure"], {})
+        self.assertIn("{{ inputs.user_instruction }}", doc_fix["prompt"])
+        self.assertIn("{{ inputs.doc_review_history }}", doc_fix["prompt"])
+
+    def test_doc_doctor_declares_required_local_non_workflow_fields(self):
+        config = module.load_config(str(ROOT / "presets" / "doc_doctor.yaml"), {})
+        self.assertEqual(config["run"]["max_steps"], 50)
+        self.assertIn("user_instruction", config["context"]["defaults"])
+        self.assertTrue(config["context"]["defaults"]["user_instruction"].strip())
+        self.assertEqual(config["context"]["defaults"]["doc_review_fix_node"], "doc_fix")
+        self.assertEqual(config["context"]["defaults"]["doc_review_end_node"], "END")
+
 
 class CliHelperTests(unittest.TestCase):
     def test_parse_context_overrides_last_value_wins(self):
@@ -122,9 +168,30 @@ class CliHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(
             RuntimeError,
             "Unknown preset identifier: 'missing'.*Available built-in presets: "
-            "doc_reviewer_loop, implement_loop, refactor_loop, reviewer_loop",
+            "doc_doctor, doc_reviewer_loop, implement_loop, refactor_loop, reviewer_loop",
         ):
             module.resolve_preset_path("missing")
+
+    def test_resolve_preset_path_resolves_doc_doctor_identifier(self):
+        resolved = module.resolve_preset_path("doc_doctor")
+        self.assertEqual(resolved, (ROOT / "presets" / "doc_doctor.yaml").resolve())
+
+    def test_resolve_preset_path_resolves_doc_doctor_from_different_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = Path.cwd()
+            cwd_a = Path(tmp) / "a"
+            cwd_b = Path(tmp) / "b"
+            cwd_a.mkdir(parents=True, exist_ok=True)
+            cwd_b.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chdir(cwd_a)
+                resolved_a = module.resolve_preset_path("doc_doctor")
+                os.chdir(cwd_b)
+                resolved_b = module.resolve_preset_path("doc_doctor")
+            finally:
+                os.chdir(original_cwd)
+        self.assertEqual(resolved_a, resolved_b)
+        self.assertEqual(resolved_a, (ROOT / "presets" / "doc_doctor.yaml").resolve())
 
 
 class MainCliContractTests(unittest.TestCase):

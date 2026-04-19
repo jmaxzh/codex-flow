@@ -6,7 +6,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
-from .config_compiler import get_compiled_history_target, get_compiled_route_bindings
+from .config_compiler import (
+    get_compiled_history_target,
+    get_compiled_route_bindings,
+    get_compiled_success_next_node_source,
+)
 from .dotted_paths import resolve_dotted_parts, set_dotted_parts
 from .fileio import write_json, write_text
 from .naming import build_step_prefix, make_run_id
@@ -22,6 +26,7 @@ class RunExecutionContext(NamedTuple):
     max_steps: int
     runtime_state: dict[str, Any]
     attempt_counter: dict[str, int]
+    node_ids: set[str]
 
 
 class WorkflowStepContext(NamedTuple):
@@ -66,6 +71,38 @@ def apply_route_bindings(node: dict[str, Any], pass_flag: bool, runtime_state: d
         set_dotted_parts(runtime_state, target_parts, target_path, value)
         applied[target_path] = source_path
     return applied
+
+
+def resolve_success_next_node(
+    *,
+    node: dict[str, Any],
+    pass_flag: bool,
+    default_next_node: str,
+    runtime_state: dict[str, Any],
+    node_ids: set[str],
+) -> str:
+    if not pass_flag:
+        return default_next_node
+
+    source_binding = get_compiled_success_next_node_source(node)
+    if source_binding is None:
+        return default_next_node
+
+    source_path = cast(str, source_binding["source"])
+    source_parts = cast(tuple[str, ...], source_binding["source_parts"])
+    try:
+        resolved = resolve_dotted_parts(runtime_state, source_parts, source_path)
+    except RuntimeError as exc:
+        if str(exc) == f"Path not found: {source_path}":
+            return default_next_node
+        raise
+
+    if not isinstance(resolved, str) or not resolved.strip():
+        raise RuntimeError(f"Node '{node['id']}' success_next_node_from resolved non-empty string required: {source_path}")
+    next_node = resolved
+    if next_node != END_NODE and next_node not in node_ids:
+        raise RuntimeError(f"Node '{node['id']}' success_next_node_from resolved invalid target: {next_node}")
+    return next_node
 
 
 def ensure_history_list(

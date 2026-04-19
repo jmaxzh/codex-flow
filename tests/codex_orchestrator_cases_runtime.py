@@ -422,6 +422,123 @@ class RouteBindingRuntimeTests(PatchedYamlMixin, WorkflowTestFactoryMixin, unitt
             )
             self.assertEqual(runtime_state["context"]["runtime"]["latest_check_result"], "已检查完成\n")
 
+    def test_run_workflow_success_next_node_from_overrides_on_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = self.write_workflow_config(
+                tmp_path,
+                run_args={"project_root": tmp_path, "max_steps": 3},
+                defaults={"next_node": "fix"},
+                start="review",
+                nodes=[
+                    {
+                        "id": "review",
+                        "prompt": "review",
+                        "input_map": {},
+                        "success_next_node_from": "context.defaults.next_node",
+                        "on_success": "END",
+                        "on_failure": "END",
+                    },
+                    {
+                        "id": "fix",
+                        "prompt": "fix",
+                        "input_map": {},
+                        "parse_output_json": False,
+                        "on_success": "END",
+                        "on_failure": "END",
+                    },
+                ],
+            )
+            called_nodes: list[str] = []
+
+            def raw_output_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
+                called_nodes.append(node_id)
+                if node_id == "review":
+                    return '{"pass": true}'
+                return "fixed"
+
+            summary = self._run_workflow_with_fake_exec(
+                config_path,
+                raw_output_for_call=raw_output_for_call,
+            )
+            assert summary is not None
+
+            self.assertEqual(called_nodes, ["review", "fix"])
+            self.assertEqual(summary["final_node"], "END")
+            self.assertIn("fix", summary["outputs"])
+
+    def test_run_workflow_success_next_node_from_falls_back_when_path_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = self.write_workflow_config(
+                tmp_path,
+                run_args={"project_root": tmp_path, "max_steps": 3},
+                defaults={},
+                start="review",
+                nodes=[
+                    {
+                        "id": "review",
+                        "prompt": "review",
+                        "input_map": {},
+                        "success_next_node_from": "context.runtime.next_node",
+                        "on_success": "END",
+                        "on_failure": "END",
+                    },
+                    {
+                        "id": "fix",
+                        "prompt": "fix",
+                        "input_map": {},
+                        "parse_output_json": False,
+                        "on_success": "END",
+                        "on_failure": "END",
+                    },
+                ],
+            )
+            called_nodes: list[str] = []
+
+            def raw_output_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
+                called_nodes.append(node_id)
+                if node_id == "review":
+                    return '{"pass": true}'
+                return "fixed"
+
+            summary = self._run_workflow_with_fake_exec(
+                config_path,
+                raw_output_for_call=raw_output_for_call,
+            )
+            assert summary is not None
+            self.assertEqual(called_nodes, ["review"])
+            self.assertNotIn("fix", summary["outputs"])
+
+    def test_run_workflow_success_next_node_from_rejects_invalid_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = self.write_workflow_config(
+                tmp_path,
+                run_args={"project_root": tmp_path, "max_steps": 3},
+                defaults={"next_node": "missing_node"},
+                start="review",
+                nodes=[
+                    {
+                        "id": "review",
+                        "prompt": "review",
+                        "input_map": {},
+                        "success_next_node_from": "context.defaults.next_node",
+                        "on_success": "END",
+                        "on_failure": "END",
+                    }
+                ],
+            )
+
+            def raw_output_for_call(*, node_id: str, step: int, attempt: int, prompt: str):
+                return '{"pass": true}'
+
+            self._run_workflow_with_fake_exec(
+                config_path,
+                raw_output_for_call=raw_output_for_call,
+                expect_error="success_next_node_from resolved invalid target: missing_node",
+            )
+
 
 class MaxStepsTests(PatchedYamlMixin, unittest.TestCase):
     def test_run_workflow_stops_when_reaching_max_steps(self):

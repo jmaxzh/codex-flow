@@ -5,7 +5,7 @@
 - 启动时通过 `--preset` 选择预设模板（必选）
 - 支持通过命令行注入并覆盖预设中的上下文默认值
 - 不再内置 `implement/review/check/fix` 固定阶段语义
-- 节点路由仅由 `pass` 与 `on_success/on_failure` 决定
+- 节点路由默认由 `pass` 与 `on_success/on_failure` 决定，也支持 `success_next_node_from` 在 `pass=true` 时进行程序化覆盖
 - 节点只写入 `outputs.<node_id>`；`parse_output_json=true` 时为 `{result, control}`，`parse_output_json=false` 时为字符串
 - 边上的 `route_bindings` 负责把结果绑定到运行时上下文供下游读取
 - 支持节点级 `collect_history_to`：将该节点每轮完整输出按顺序追加到 `context.runtime.*` 历史数组
@@ -32,6 +32,12 @@ python3 scripts/codex_automation_loops.py --preset reviewer_loop
 
 ```bash
 python3 scripts/codex_automation_loops.py --preset doc_reviewer_loop
+```
+
+新增文档修复闭环预设（每轮先 `doc_reviwer` 收敛，再由程序按阶段状态决定 `END` 或进入 `doc_fix`）：
+
+```bash
+python3 scripts/codex_automation_loops.py --preset doc_doctor
 ```
 
 `refactor_loop` 内的评审角色已命名为 `arch_reviwer`（与 `refactor` 迭代，不使用 fix 角色）。
@@ -179,6 +185,58 @@ workflow:
           context.runtime.latest_check: outputs.check.control
 ```
 
+### 组合预设 DSL（`workflow.imports` + `workflow.node_overrides`）
+
+可在新 preset 中导入一个或多个内置 preset 的 `workflow.nodes`，再在组合层重连导入节点、追加本地节点：
+
+```yaml
+workflow:
+  start: doc_reviwer
+  imports:
+    - preset: doc_reviewer_loop
+  node_overrides:
+    doc_reviwer:
+      on_success: END
+      on_failure: doc_reviwer
+      success_next_node_from: context.runtime.doc_review_next_node
+      route_bindings:
+        failure:
+          context.runtime.doc_review_next_node: context.defaults.doc_review_fix_node
+  nodes:
+    - id: doc_fix
+      prompt: |
+        用户指令: {{ inputs.user_instruction }}
+        全量历史评审输出: {{ inputs.doc_review_history }}
+        {{ prompt_file("./prompts/shared/doc_fix_role.md") }}
+      input_map:
+        user_instruction: context.defaults.user_instruction
+        doc_review_history: context.runtime.doc_review_history
+      parse_output_json: false
+      on_success: doc_reviwer
+      on_failure: END
+      route_bindings:
+        success:
+          context.runtime.doc_review_next_node: context.defaults.doc_review_end_node
+```
+
+`doc_doctor` 语义要点：
+
+- `doc_reviwer(pass=false)` 始终自循环回 `doc_reviwer`（继续当前 review 阶段），并把 `context.runtime.doc_review_next_node` 置为 `doc_fix`
+- `doc_reviwer(pass=true)` 时，运行时先读 `success_next_node_from`：
+  - 若该路径缺失，回退 `on_success=END`
+  - 若该路径为 `doc_fix`，则进入 `doc_fix`
+- `doc_fix` 成功后会把 `context.runtime.doc_review_next_node` 重置为 `END`，再回到 `doc_reviwer` 复检
+
+固定规则：
+
+- `workflow` 根级仅允许 `start/imports/node_overrides/nodes`
+- `imports[]` 条目仅允许 `preset` 字段，且值必须是内置 preset 标识符（不可传路径、不可带 `.yaml`）
+- `node_overrides.<node_id>` 仅允许 `on_success/on_failure/route_bindings/success_next_node_from`
+- 组合顺序：按 `imports` 声明顺序导入节点 -> 应用 `node_overrides` -> 追加本地 `nodes`
+- `imports` 仅导入被导入 preset 的 `workflow.nodes`，不继承 `run/executor/context`
+- `workflow.start` 仍需在当前 preset 显式声明；`nodes` 可省略或设为 `[]`
+- 禁止嵌套导入：若被导入 preset 也声明了 `workflow.imports`，编译报错
+
 `run.project_root` 路径解析规则：
 
 - 绝对路径：直接使用
@@ -202,6 +260,7 @@ workflow:
 
 - `pass=true` -> `on_success`
 - `pass=false` -> `on_failure`
+- 若配置 `success_next_node_from`，则在 `pass=true` 时优先从该路径读取字符串目标节点；路径缺失时回退 `on_success`
 - `END` -> 结束流程
 - 示例默认采用显式 fail-fast：失败分支直接路由到 `END`
 
@@ -333,3 +392,4 @@ prompt: |
 - [presets/refactor_loop.yaml](./presets/refactor_loop.yaml)
 - [presets/reviewer_loop.yaml](./presets/reviewer_loop.yaml)
 - [presets/doc_reviewer_loop.yaml](./presets/doc_reviewer_loop.yaml)
+- [presets/doc_doctor.yaml](./presets/doc_doctor.yaml)
