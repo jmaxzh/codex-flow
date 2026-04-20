@@ -12,9 +12,10 @@ if __package__ in (None, "") or __package__ == "scripts":
     if str(SCRIPT_DIR) not in sys.path:
         sys.path.insert(0, str(SCRIPT_DIR))
 
-from _codex_orchestrator.config_compiler import END_NODE, get_compiled_input_bindings
-from _codex_orchestrator.config_compiler import load_config as _load_config_impl
-from _codex_orchestrator.dotted_paths import resolve_dotted_parts, resolve_dotted_path
+from _codex_orchestrator.dotted_paths import (
+    resolve_dotted_parts,
+    resolve_dotted_path,
+)
 from _codex_orchestrator.executor import CodexExecRequest
 from _codex_orchestrator.executor import run_codex_exec as _run_codex_exec_impl
 from _codex_orchestrator.fileio import read_text
@@ -23,6 +24,13 @@ from _codex_orchestrator.naming import (
 )
 from _codex_orchestrator.naming import (
     make_codex_log_path as _make_codex_log_path_impl,
+)
+from _codex_orchestrator.native_workflows.registry import (
+    get_flow_runner,
+    list_builtin_preset_identifiers,
+)
+from _codex_orchestrator.native_workflows.runtime import (
+    validate_stages as _validate_stages_impl,
 )
 from _codex_orchestrator.output_processing import (
     extract_last_non_empty_line as _extract_last_non_empty_line_impl,
@@ -36,25 +44,9 @@ from _codex_orchestrator.output_processing import (
 from _codex_orchestrator.output_processing import (
     resolve_node_output as _resolve_node_output_impl,
 )
-from _codex_orchestrator.paths import resolve_path, resolve_preset_path
+from _codex_orchestrator.paths import resolve_path, validate_preset_identifier
 from _codex_orchestrator.prompting import PromptRenderDeps
 from _codex_orchestrator.prompting import render_prompt as _render_prompt_impl
-from _codex_orchestrator.runtime import (
-    RunExecutionContext,
-    StepExecutionResult,
-    WorkflowStepContext,
-    build_meta_payload,
-    build_runtime_snapshot,
-    build_step_context,
-    collect_output_history,
-    create_runtime_state,
-    finalize_run_outputs,
-    initialize_history_targets,
-    persist_step_artifacts,
-    plan_step_artifacts,
-    prepare_run_workspace,
-    resolve_success_next_node,
-)
 from _codex_orchestrator.runtime import (
     apply_route_bindings as _apply_route_bindings_impl,
 )
@@ -107,15 +99,6 @@ else:
     task = cast(_DecoratorLike, _task_impl)
     PREFECT_IMPORT_ERROR = _prefect_import_error
 
-_yaml_import_error: Exception | None = None
-try:
-    import yaml as _yaml_impl
-except Exception as exc:  # pragma: no cover - runtime dependency guard
-    _yaml_import_error = exc
-    _yaml_impl = None
-yaml = _yaml_impl
-YAML_IMPORT_ERROR = _yaml_import_error
-
 _jinja_import_error: Exception | None = None
 try:
     from jinja2 import Environment as _Environment
@@ -145,29 +128,17 @@ def extract_last_non_empty_line(raw_output: str) -> tuple[str, str]:
 
 
 @task
-def load_config(
-    config_path: str,
-    context_overrides: dict[str, str],
-    launch_cwd: str | None = None,
-) -> dict[str, Any]:
-    return _load_config_impl(
-        config_path=config_path,
-        context_overrides=context_overrides,
-        launch_cwd=launch_cwd,
-        yaml_module=yaml,
-        yaml_import_error=YAML_IMPORT_ERROR,
-    )
-
-
-@task
 def build_prompt_inputs(node: dict[str, Any], runtime_state: dict[str, Any]) -> dict[str, Any]:
     prompt_inputs: dict[str, Any] = {}
-    for binding in get_compiled_input_bindings(node):
-        prompt_inputs[binding["input_key"]] = resolve_dotted_parts(
-            runtime_state,
-            binding["source_parts"],
-            binding["source"],
-        )
+    input_map_raw = node.get("input_map", {})
+    if not isinstance(input_map_raw, dict):
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' input_map must be object")
+
+    for input_key_raw, source_path_raw in cast(dict[str, Any], input_map_raw).items():
+        input_key = input_key_raw
+        source_path = source_path_raw
+        source_parts = tuple(source_path.split("."))
+        prompt_inputs[input_key] = resolve_dotted_parts(runtime_state, source_parts, source_path)
     return prompt_inputs
 
 
@@ -231,154 +202,19 @@ def ensure_history_list(
     return _ensure_history_list_impl(runtime_state, target_path, target_parts)
 
 
-def execute_step_node(
-    *,
-    run_ctx: RunExecutionContext,
-    step_ctx: WorkflowStepContext,
-    artifacts: Any,
-) -> StepExecutionResult:
-    node = step_ctx.node
-
-    prompt_inputs = build_prompt_inputs(node, run_ctx.runtime_state)
-    rendered = render_prompt(
-        node["prompt"],
-        prompt_inputs,
-        run_ctx.config["config_path"],
-        node["id"],
-        node["prompt_field"],
-    )
-
-    codex_log_path = run_codex_exec(
-        CodexExecRequest(
-            project_root=str(run_ctx.project_root),
-            executor_cmd=run_ctx.config["executor"]["cmd"],
-            prompt=rendered,
-            out_file=str(artifacts.raw_output_path),
-            task_log_dir=str(run_ctx.run_log_dir),
-            node_id=step_ctx.node_id,
-            step=step_ctx.step,
-            attempt=step_ctx.attempt,
-        )
-    )
-
-    raw_output = read_text(artifacts.raw_output_path)
-    node_output, pass_flag = resolve_node_output(raw_output, node["parse_output_json"])
-    run_ctx.runtime_state["outputs"][step_ctx.node_id] = node_output
-    collect_output_history(node, node_output, run_ctx.runtime_state)
-
-    next_node = resolve_next_node(node, pass_flag)
-    next_node = resolve_success_next_node(
-        node=node,
-        pass_flag=pass_flag,
-        default_next_node=next_node,
-        runtime_state=run_ctx.runtime_state,
-        node_ids=run_ctx.node_ids,
-    )
-    applied_route_bindings = apply_route_bindings(node, pass_flag, run_ctx.runtime_state)
-    return StepExecutionResult(
-        rendered_prompt=rendered,
-        raw_output_path=artifacts.raw_output_path,
-        codex_log_path=codex_log_path,
-        node_output=node_output,
-        pass_flag=pass_flag,
-        next_node=next_node,
-        applied_route_bindings=applied_route_bindings,
-    )
-
-
-def execute_workflow_step(
-    *,
-    run_ctx: RunExecutionContext,
-    step_ctx: WorkflowStepContext,
-) -> str:
-    artifacts = plan_step_artifacts(run_ctx.run_state_dir, step_ctx)
-    step_result = execute_step_node(
-        run_ctx=run_ctx,
-        step_ctx=step_ctx,
-        artifacts=artifacts,
-    )
-    meta_payload = build_meta_payload(
-        step_ctx=step_ctx,
-        step_result=step_result,
-        artifacts=artifacts,
-    )
-    persist_step_artifacts(
-        artifacts=artifacts,
-        rendered_prompt=step_result.rendered_prompt,
-        node_output=step_result.node_output,
-        meta_payload=meta_payload,
-        runtime_snapshot=build_runtime_snapshot(
-            run_ctx.runtime_state,
-            run_ctx.attempt_counter,
-            step_result.next_node,
-            step_ctx.step,
-            run_ctx.max_steps,
-        ),
-    )
-    return step_result.next_node
+def validate_stages(start_node: str, nodes_by_id: dict[str, dict[str, Any]]) -> None:
+    _validate_stages_impl(start_node, cast(Any, nodes_by_id))
 
 
 @flow(name="codex_orchestrator")
 def run_workflow(
-    config_path: str,
+    preset_id: str,
     context_overrides: dict[str, str],
     launch_cwd: str | None = None,
 ) -> dict[str, Any]:
-    config = load_config(config_path, context_overrides, launch_cwd)
-
-    run_cfg = config["run"]
-    run_workspace = prepare_run_workspace(run_cfg)
-    project_root = run_workspace["project_root"]
-    state_dir = run_workspace["state_dir"]
-    run_id = run_workspace["run_id"]
-    run_state_dir = run_workspace["run_state_dir"]
-    run_log_dir = run_workspace["run_log_dir"]
-
-    workflow = config["workflow"]
-    nodes_by_id = {node["id"]: node for node in workflow["nodes"]}
-
-    runtime_state = create_runtime_state(config["context"]["defaults"])
-    initialize_history_targets(workflow["nodes"], runtime_state)
-    attempt_counter: dict[str, int] = {}
-    steps_executed = 0
-
-    current_node_id = workflow["start"]
-    max_steps = run_cfg["max_steps"]
-    run_ctx = RunExecutionContext(
-        config=config,
-        project_root=project_root,
-        run_state_dir=run_state_dir,
-        run_log_dir=run_log_dir,
-        max_steps=max_steps,
-        runtime_state=runtime_state,
-        attempt_counter=attempt_counter,
-        node_ids=set(nodes_by_id),
-    )
-    while steps_executed < max_steps and current_node_id != END_NODE:
-        step = steps_executed + 1
-        node = nodes_by_id[current_node_id]
-        step_ctx = build_step_context(
-            node=node,
-            node_id=current_node_id,
-            step=step,
-            attempt_counter=attempt_counter,
-        )
-        current_node_id = execute_workflow_step(
-            run_ctx=run_ctx,
-            step_ctx=step_ctx,
-        )
-        steps_executed += 1
-    if current_node_id != END_NODE:
-        raise RuntimeError(f"Reached max_steps without END: {max_steps}")
-
-    return finalize_run_outputs(
-        run_id=run_id,
-        run_state_dir=run_state_dir,
-        state_dir=state_dir,
-        final_node=current_node_id,
-        steps_executed=steps_executed,
-        outputs=runtime_state["outputs"],
-    )
+    launch_cwd_resolved = str(Path(launch_cwd).resolve()) if launch_cwd else str(Path.cwd().resolve())
+    runner = get_flow_runner(preset_id)
+    return runner(context_overrides, launch_cwd_resolved)
 
 
 def parse_context_overrides(pairs: list[list[str]] | None) -> dict[str, str]:
@@ -394,11 +230,11 @@ def parse_context_overrides(pairs: list[list[str]] | None) -> dict[str, str]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run codex workflow orchestrator from preset config")
+    parser = argparse.ArgumentParser(description="Run codex workflow orchestrator from built-in preset")
     parser.add_argument(
         "--preset",
         required=True,
-        help="Built-in preset identifier from repository presets/ (without .yaml), e.g. implement_loop",
+        help="Built-in preset identifier, e.g. implement_loop",
     )
     parser.add_argument(
         "--context",
@@ -413,7 +249,6 @@ def parse_args() -> argparse.Namespace:
 def format_missing_dependency_error() -> str | None:
     dependency_errors = (
         ("prefect", PREFECT_IMPORT_ERROR),
-        ("pyyaml", YAML_IMPORT_ERROR),
         ("jinja2", JINJA_IMPORT_ERROR),
     )
     for dep_name, dep_error in dependency_errors:
@@ -427,12 +262,14 @@ def fail_with_stderr(message: str) -> int:
     return 2
 
 
-def resolve_main_config(preset: str, context_pairs: list[list[str]] | None) -> tuple[Path, dict[str, str]]:
+def resolve_main_config(preset: str, context_pairs: list[list[str]] | None) -> tuple[str, dict[str, str]]:
     context_overrides = parse_context_overrides(context_pairs)
-    config_path = resolve_preset_path(preset)
-    if not config_path.is_file():
-        raise RuntimeError(f"Config file not found: {config_path}")
-    return config_path, context_overrides
+    preset_id = validate_preset_identifier(preset)
+    # Validate against built-ins early for actionable CLI diagnostics.
+    if preset_id not in set(list_builtin_preset_identifiers()):
+        available = ", ".join(list_builtin_preset_identifiers()) or "(none found)"
+        raise RuntimeError(f"Unknown preset identifier: '{preset_id}'. Available built-in presets: {available}.")
+    return preset_id, context_overrides
 
 
 def main() -> int:
@@ -443,13 +280,13 @@ def main() -> int:
         return fail_with_stderr(missing_dependency)
 
     try:
-        config_path, context_overrides = resolve_main_config(args.preset, args.context)
+        preset_id, context_overrides = resolve_main_config(args.preset, args.context)
     except Exception as exc:
         return fail_with_stderr(str(exc))
 
     try:
         launch_cwd = str(Path.cwd().resolve())
-        run_workflow(str(config_path), context_overrides, launch_cwd)
+        run_workflow(preset_id, context_overrides, launch_cwd)
     except Exception as exc:
         return fail_with_stderr(str(exc))
     return 0

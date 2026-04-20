@@ -1,48 +1,14 @@
-# Codex 配置驱动工作流编排（Prefect）
+# Codex Native Prefect 工作流编排
 
-`scripts/codex_automation_loops.py` 是通用编排引擎：
+`scripts/codex_automation_loops.py` 基于 Prefect + native Python flow 注册表运行，不再加载/编译 YAML DSL preset。
 
-- 启动时通过 `--preset` 选择预设模板（必选）
-- 支持通过命令行注入并覆盖预设中的上下文默认值
-- 不再内置 `implement/review/check/fix` 固定阶段语义
-- 节点路由默认由 `pass` 与 `on_success/on_failure` 决定，也支持 `success_next_node_from` 在 `pass=true` 时进行程序化覆盖
-- 节点只写入 `outputs.<node_id>`；`parse_output_json=true` 时为 `{result, control}`，`parse_output_json=false` 时为字符串
-- 边上的 `route_bindings` 负责把结果绑定到运行时上下文供下游读取
-- 支持节点级 `collect_history_to`：将该节点每轮完整输出按顺序追加到 `context.runtime.*` 历史数组
-
-## 运行方式
+## 快速开始
 
 ```bash
 python3 scripts/codex_automation_loops.py --preset implement_loop
 ```
 
-新增重构循环预设：
-
-```bash
-python3 scripts/codex_automation_loops.py --preset refactor_loop
-```
-
-新增 reviewer 循环预设（仅 `bug_reviwer`，由引擎收集每轮完整评审输出历史）：
-
-```bash
-python3 scripts/codex_automation_loops.py --preset reviewer_loop
-```
-
-新增文档 reviewer 循环预设（仅 `doc_reviwer`，聚焦文档改动质量）：
-
-```bash
-python3 scripts/codex_automation_loops.py --preset doc_reviewer_loop
-```
-
-新增文档修复闭环预设（每轮先 `doc_reviwer` 收敛，再由程序按阶段状态决定 `END` 或进入 `doc_fix`）：
-
-```bash
-python3 scripts/codex_automation_loops.py --preset doc_doctor
-```
-
-`refactor_loop` 内的评审角色已命名为 `arch_reviwer`（与 `refactor` 迭代，不使用 fix 角色）。
-
-带上下文注入覆盖示例（可重复 `--context`）：
+带上下文覆盖（可重复 `--context`，同 key 后写覆盖前写）：
 
 ```bash
 python3 scripts/codex_automation_loops.py \
@@ -51,345 +17,59 @@ python3 scripts/codex_automation_loops.py \
   --context user_instruction "请先完成 API 层"
 ```
 
-运行前请确保：
+## 可用内置 Preset
 
-1. 使用当前系统 `python3.13` 安装依赖（不创建虚拟环境）：
+- `implement_loop`
+- `refactor_loop`
+- `reviewer_loop`
+- `doc_reviewer_loop`
+- `doc_doctor`
 
-   ```bash
-   python3.13 -m pip install --break-system-packages --user -r requirements.txt
-   ```
+## 文档导航
 
-2. 安装 git hooks（`pre-commit` + `pre-push`）并做一次本地验证：
+详细规范已迁移到 `docs/specs`。README 只保留入口信息，避免与规范文档重复。
 
-   ```bash
-   ./scripts/setup_hooks.sh
-   ```
+- native flow 与编排迁移：`docs/specs/native-prefect-preset-orchestration/spec.md`
+- preset 标识符解析与校验：`docs/specs/preset-enum-resolution/spec.md`
+- 节点输出（`result/control`）契约：`docs/specs/node-output-contract/spec.md`
+- prompt 文件引用与渲染规则：`docs/specs/prompt-file-reference/spec.md`
+- `doc_doctor` 预设语义：`docs/specs/doc-doctor-preset/spec.md`
+- workflow 组合/弃用字段约束：`docs/specs/preset-workflow-composition/spec.md`
+- Python 质量门禁规范：`docs/specs/python-quality-gate/spec.md`
 
-3. `--preset` 必须是仓库内置预设标识符（对应 `presets/<id>.yaml`）
-4. `run.project_root` 指向有效项目目录（相对路径以启动命令时的当前工作目录 `cwd` 为基准）
+## 运行产物（概览）
 
-## Python 质量门禁（Ruff + basedpyright + pre-commit）
+默认状态目录：`<launch_cwd>/.codex-loop-state/`
 
-本仓库仅支持以下 Python 质量工具链：
+- `runs/<run_id>/`：单次 run 目录
+- `runs/<run_id>/logs/`：`codex exec` 控制台日志
+- `runs/<run_id>/history.jsonl`：step 元信息流水
+- `runs/<run_id>/runtime_state.json`：运行时状态快照
+- `runs/<run_id>/run_summary.json`：run 汇总
+- `latest_run_id` / `latest_run.json`：最近一次 run 索引
 
-- `ruff`（lint + format）
-- `basedpyright`（strict 类型检查）
-- `pre-commit`（本地与 CI 的统一入口）
+## 依赖安装与本地验证
 
-旧的 Python 质量工具链（例如 `pylint`）在本仓库中已不再受支持，属于不兼容变更。
-
-### 规范的本地执行命令
+安装依赖（系统 Python 3.13）：
 
 ```bash
-pre-commit run --all-files --hook-stage pre-commit
-pre-commit run --all-files --hook-stage pre-push
+python3.13 -m pip install --break-system-packages --user -r requirements.txt
 ```
 
-这两条命令与 CI 质量门禁完全一致，且都以 `scripts/` 与 `tests/` 为全量检查范围（不是仅检查改动文件）。
+运行测试：
 
-### 维护性硬门禁
-
-- 禁止使用忽略策略绕过门禁：不允许 Ruff `per-file-ignores`、`ignore/extend-ignore`，不允许在 `scripts/` 与 `tests/` 中出现 `# noqa`、`# type: ignore`。
-- Ruff 复杂度阈值：`C901 <= 10`、`max-statements = 50`、`max-branches = 10`、`max-returns = 6`、`max-args = 6`。
-- `scripts/*.py` 文件大小阈值：单文件最多 500 行，由本地 gate hook 强制执行（`scripts-size-gate`）。
-
-### 版本对齐规则
-
-- 对外部 hook 仓库（非 `repo: local`），`.pre-commit-config.yaml` 中 hook `rev` 是执行时权威版本。
-- 依赖文件中的工具版本 pin 必须与该 `rev` 对齐。
-- `repo: local` hook 不适用 `rev` 权威规则。
-
-### 轻量校验清单（修改 hook 版本时）
-
-1. 更新 `.pre-commit-config.yaml` 的目标 hook `rev`。
-2. 同步更新 `requirements.txt` 中对应工具的 pin。
-3. 运行 `pre-commit run --all-files --hook-stage pre-commit`。
-4. 运行 `pre-commit run --all-files --hook-stage pre-push`。
-
-## CLI 参数
-
-- `--preset <preset-id>`（必选）
-  - 仅接受扩展名省略的预设标识符（如 `implement_loop`）
-  - 由编排器固定解析到仓库 `presets/<preset-id>.yaml`，与当前工作目录无关
-  - 不接受路径形式（如 `presets/implement_loop.yaml`）与 `.yaml` 后缀（如 `implement_loop.yaml`）
-- `--context <key> <value>`（可选，可重复）
-  - 仅支持扁平键值注入
-  - `key` 不允许包含 `.`，不允许嵌套对象
-  - 同 key 出现多次时，后者覆盖前者
-
-### `--preset` 迁移说明（BREAKING）
-
-- 旧行为允许 `--preset` 传文件路径；新行为仅允许预设标识符
-- 旧写法 `--preset presets/implement_loop.yaml` 改为 `--preset implement_loop`
-- 旧写法 `--preset implement_loop.yaml` 改为 `--preset implement_loop`
-
-## 配置 DSL
-
-```yaml
-version: 1
-
-run:
-  project_root: /abs/path/to/target
-  state_dir: .codex-loop-state
-  max_steps: 50
-
-executor:
-  cmd: ["codex", "exec", "--skip-git-repo-check"]
-
-context:
-  defaults:
-    spec: "docs/xxx.md"
-    user_instruction: "根据 spec 进行首轮实现"
-
-workflow:
-  start: implement_first
-  nodes:
-    - id: implement_first
-      prompt: |
-        {{ prompt_file("./prompts/shared/implementer_role.md") }}
-        最后一行输出严格 JSON object（不要使用代码块），至少包含：
-        {
-          "pass": true/false,
-          "change_summary": "..."
-        }
-        首轮指令: {{ inputs.user_instruction }}
-        规格: {{ inputs.spec }}
-      input_map:
-        user_instruction: context.defaults.user_instruction
-        spec: context.defaults.spec
-      on_success: check
-      on_failure: END
-      route_bindings:
-        success:
-          context.runtime.latest_impl: outputs.implement_first
-
-    - id: check
-      prompt: |
-        {{ prompt_file("./prompts/shared/implementer_checker_role.md") }}
-        若全部完成，pass=true 且 todo 为空数组。
-        若未完成，pass=false 且 todo 给出剩余待办（字符串数组）。
-        最后一行输出严格 JSON object（不要使用代码块），至少包含：
-        {
-          "pass": true/false,
-          "verification": "...",
-          "todo": ["..."]
-        }
-        实现输出: {{ inputs.latest_impl }}
-      input_map:
-        latest_impl: context.runtime.latest_impl
-      collect_history_to: context.runtime.check_history
-      on_success: END
-      on_failure: implement_loop
-      route_bindings:
-        failure:
-          context.runtime.latest_check: outputs.check.control
+```bash
+python3 -m pytest -q
 ```
 
-### 组合预设 DSL（`workflow.imports` + `workflow.node_overrides`）
+安装并执行 Git hooks（pre-commit + pre-push）：
 
-可在新 preset 中导入一个或多个内置 preset 的 `workflow.nodes`，再在组合层重连导入节点、追加本地节点：
-
-```yaml
-workflow:
-  start: doc_reviwer
-  imports:
-    - preset: doc_reviewer_loop
-  node_overrides:
-    doc_reviwer:
-      on_success: END
-      on_failure: doc_reviwer
-      success_next_node_from: context.runtime.doc_review_next_node
-      route_bindings:
-        failure:
-          context.runtime.doc_review_next_node: context.defaults.doc_review_fix_node
-  nodes:
-    - id: doc_fix
-      prompt: |
-        用户指令: {{ inputs.user_instruction }}
-        全量历史评审输出: {{ inputs.doc_review_history }}
-        {{ prompt_file("./prompts/shared/doc_fix_role.md") }}
-      input_map:
-        user_instruction: context.defaults.user_instruction
-        doc_review_history: context.runtime.doc_review_history
-      parse_output_json: false
-      on_success: doc_reviwer
-      on_failure: END
-      route_bindings:
-        success:
-          context.runtime.doc_review_next_node: context.defaults.doc_review_end_node
+```bash
+./scripts/setup_hooks.sh
 ```
 
-`doc_doctor` 语义要点：
+## 迁移说明
 
-- `doc_reviwer(pass=false)` 始终自循环回 `doc_reviwer`（继续当前 review 阶段），并把 `context.runtime.doc_review_next_node` 置为 `doc_fix`
-- `doc_reviwer(pass=true)` 时，运行时先读 `success_next_node_from`：
-  - 若该路径缺失，回退 `on_success=END`
-  - 若该路径为 `doc_fix`，则进入 `doc_fix`
-- `doc_fix` 成功后会把 `context.runtime.doc_review_next_node` 重置为 `END`，再回到 `doc_reviwer` 复检
-
-固定规则：
-
-- `workflow` 根级仅允许 `start/imports/node_overrides/nodes`
-- `imports[]` 条目仅允许 `preset` 字段，且值必须是内置 preset 标识符（不可传路径、不可带 `.yaml`）
-- `node_overrides.<node_id>` 仅允许 `on_success/on_failure/route_bindings/success_next_node_from`
-- 组合顺序：按 `imports` 声明顺序导入节点 -> 应用 `node_overrides` -> 追加本地 `nodes`
-- `imports` 仅导入被导入 preset 的 `workflow.nodes`，不继承 `run/executor/context`
-- `workflow.start` 仍需在当前 preset 显式声明；`nodes` 可省略或设为 `[]`
-- 禁止嵌套导入：若被导入 preset 也声明了 `workflow.imports`，编译报错
-
-`run.project_root` 路径解析规则：
-
-- 绝对路径：直接使用
-- 相对路径：相对于启动脚本时的当前工作目录（`cwd`）解析，不相对于预设文件目录
-
-`context.defaults` 是预设中的默认输入。运行时若传入 `--context key value`，会覆盖同名默认值；未注入的 key 继续使用预设默认值。
-
-## 固定输出契约
-
-- `parse_output_json=true` 时：
-  1. 只解析输出的最后一个非空行（即最后一行有效内容）
-  2. 该行必须是可解析的严格 JSON，且顶层必须是 JSON object
-  3. 必含 `pass` 字段，且 `pass` 必须是 boolean
-  4. 节点输出写入 `outputs.<node_id>`，形态为：
-     - `outputs.<node_id>.result`：控制 JSON 行之前的完整原始文本
-     - `outputs.<node_id>.control`：最后一个非空行解析出的 JSON object
-- `parse_output_json=false` 时：
-  - 节点输出保持字符串，写入 `outputs.<node_id>`
-
-## 路由规则
-
-- `pass=true` -> `on_success`
-- `pass=false` -> `on_failure`
-- 若配置 `success_next_node_from`，则在 `pass=true` 时优先从该路径读取字符串目标节点；路径缺失时回退 `on_success`
-- `END` -> 结束流程
-- 示例默认采用显式 fail-fast：失败分支直接路由到 `END`
-
-可选 `route_bindings` 在边上执行，用于把来源值写入 `context.runtime.*`：
-
-```yaml
-route_bindings:
-  success:
-    context.runtime.latest_impl: outputs.implement_first
-  failure:
-    context.runtime.latest_check: outputs.check.control
-```
-
-可选 `collect_history_to` 在节点执行后追加历史，用于收集该节点每轮完整输出：
-
-```yaml
-collect_history_to: context.runtime.review_history
-```
-
-- 目标路径必须以 `context.runtime.` 开头
-- 路径不存在时自动初始化为 `[]`
-- 每轮 append 当前节点完整输出（不去重，不改写原输出）
-- 当 `parse_output_json=true` 时，append 项为 `{result, control}`
-- 当 `parse_output_json=false` 时，append 项为字符串
-
-## 输入映射规则
-
-`input_map` 只允许引用：
-
-- `context.defaults.*`
-- `context.runtime.*`
-- `outputs.*`
-
-`outputs.<node_id>` 输出形态取决于节点配置：
-
-- `parse_output_json=true`：`outputs.<node_id>` 为 `{result, control}`
-- `parse_output_json=false`：`outputs.<node_id>` 为字符串
-
-推荐按语义读取：
-
-- 业务正文：`outputs.<node_id>.result`
-- 控制信号：`outputs.<node_id>.control`
-
-`context.runtime.*` 由编排层通过 `route_bindings` 更新，不改变节点输出归属。
-
-## 输出路径迁移（BREAKING）
-
-旧配置若把 `outputs.<node_id>` 当“控制 JSON 对象”使用，需要迁移到 `.control`；若要读取正文，改为 `.result`。
-
-旧/新路径对照：
-
-- 旧：`outputs.check`
-- 新（控制）：`outputs.check.control`
-- 新（正文）：`outputs.check.result`
-
-`collect_history_to` 条目形态也有变更（仅 `parse_output_json=true` 节点）：
-
-- 旧：每轮直接 append 控制对象（例如 `{"pass": false, "issues": ["a"]}`）
-- 新：每轮 append 完整封装对象（例如 `{"result": "本轮发现问题...", "control": {"pass": false, "issues": ["a"]}}`）
-
-## Prompt 模板与 `prompt_file(...)`
-
-节点 `prompt` 使用 Jinja2 统一渲染：`{{ inputs.* }}` 与 `{{ prompt_file("...") }}` 在同一渲染流程完成。
-
-- 语法：`{{ prompt_file("<relative_path>") }}`
-- 路径基准：相对当前 workflow 配置文件目录（不是 `cwd`，也不是 `run.project_root`）
-- 仅允许非空相对路径，拒绝绝对路径
-- 允许 `..`，按常规相对路径解析
-- include 文件按 UTF-8 读取
-- 建议普通用户始终使用字符串字面量相对路径
-- 建议组织方式：仅将可复用 role 文本拆分到文件；输出协议保留在节点 `prompt` 配置中
-
-最小示例（role include + 输出协议内联 + inputs 变量共存）：
-
-```yaml
-prompt: |
-  {{ prompt_file("./prompts/shared/implementer_role.md") }}
-  最后一行输出严格 JSON object（不要使用代码块），至少包含：
-  {
-    "pass": true/false,
-    "change_summary": "..."
-  }
-  首轮指令: {{ inputs.user_instruction }}
-  规格: {{ inputs.spec }}
-```
-
-固定边界（保持实现极简）：
-
-- 不支持旧语法兼容（如 `{{prompt_file:./x.md}}`）
-- 不做递归 include 检测
-- 不做 include 内容二次模板渲染（include 文件里的 `{{ ... }}` 按文本保留）
-- 不为动态/表达式路径参数提供兼容承诺
-- 不引入复杂路径安全策略（固定仓库根、symlink 越界防护等）
-
-如果需要在主模板里输出字面量 `{{ ... }}`，可使用 Jinja2 `raw` 块：
-
-```jinja
-{% raw %}{{ inputs.example }}{% endraw %}
-```
-
-旧语法手动迁移最小清单：
-
-1. 把 `{{prompt_file:./path/to/file.md}}` 替换为 `{{ prompt_file("./path/to/file.md") }}`
-2. 确认路径是“相对配置文件目录”的相对路径
-3. 确认 include 文件按 UTF-8 可读取
-4. 检查 include 文件中是否有 `{{ ... }}`，若有则按文本保留或挪回主模板处理
-
-## 状态与日志
-
-默认写入 `run.state_dir`：
-
-- `runs/<run_id>/`：单次执行的 run 级隔离目录（每次运行一个新目录）
-- `runs/<run_id>/logs/workflow__<timestamp>/`：该 run 内每次 `codex exec` 的完整控制台日志
-- `runs/<run_id>/stepXXX__<node>__attemptYY__raw.txt`：节点原始输出
-- `runs/<run_id>/stepXXX__<node>__attemptYY__prompt.txt`：渲染后提示词
-- `runs/<run_id>/stepXXX__<node>__attemptYY__parsed.json`：解析后 JSON
-- `runs/<run_id>/stepXXX__<node>__attemptYY__meta.json`：step 元信息（step/node_id/attempt/next_node/applied_route_bindings 等）
-- `runs/<run_id>/history.jsonl`：该 run 的逐步执行历史
-- `runs/<run_id>/runtime_state.json`：该 run 最近状态快照（包含 `context.defaults`/`context.runtime`、`outputs`、`attempt_counter`）
-- `runs/<run_id>/run_summary.json`：该 run 最终汇总
-- `latest_run_id`：最近一次 run 的 ID（文本）
-- `latest_run.json`：最近一次 run 的索引（包含 `run_id` 与 `run_state_dir`）
-
-## 示例配置
-
-仓库根目录提供了可直接改造的示例：
-
-- [presets/implement_loop.yaml](./presets/implement_loop.yaml)
-- [presets/refactor_loop.yaml](./presets/refactor_loop.yaml)
-- [presets/reviewer_loop.yaml](./presets/reviewer_loop.yaml)
-- [presets/doc_reviewer_loop.yaml](./presets/doc_reviewer_loop.yaml)
-- [presets/doc_doctor.yaml](./presets/doc_doctor.yaml)
+- `--preset` 接受内置 preset 标识符，不接受 YAML 路径
+- `workflow.imports` / `node_overrides` 等旧 YAML DSL 组合能力已移除
+- 现有行为以 `scripts/_codex_orchestrator/native_workflows/` 与 `docs/specs/` 为准

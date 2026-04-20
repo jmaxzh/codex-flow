@@ -49,7 +49,7 @@ def parse_and_validate_output(raw_output: str) -> tuple[dict[str, Any], bool]:
 def resolve_node_output(raw_output: str, parse_output_json: bool) -> tuple[Any, bool]:
     if parse_output_json:
         return parse_and_validate_output(raw_output)
-    return raw_output.rstrip(), True
+    return raw_output.rstrip("\r\n"), True
 
 
 def resolve_next_node(node: dict[str, Any], pass_flag: bool) -> str:

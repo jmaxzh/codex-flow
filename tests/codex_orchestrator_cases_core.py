@@ -63,19 +63,6 @@ class RoutingTests(unittest.TestCase):
                 "success": {"context.runtime.latest_impl": "outputs.n1"},
                 "failure": {},
             },
-            "compiled": {
-                "route_bindings": {
-                    "success": [
-                        {
-                            "target": "context.runtime.latest_impl",
-                            "source": "outputs.n1",
-                            "target_parts": ("context", "runtime", "latest_impl"),
-                            "source_parts": ("outputs", "n1"),
-                        }
-                    ],
-                    "failure": [],
-                }
-            },
         }
         runtime_state: dict[str, Any] = {
             "context": {"defaults": {}, "runtime": {}},
@@ -95,40 +82,14 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(outputs_nested["k"], 1)
         self.assertEqual(outputs_arr, [1])
 
-    def test_apply_route_bindings_requires_compiled_parts(self):
-        node = {
-            "id": "n1",
-            "route_bindings": {"success": {"context.runtime.latest_impl": "outputs.n1"}},
-        }
-        runtime_state: dict[str, Any] = {
-            "context": {"defaults": {}, "runtime": {}},
-            "outputs": {"n1": {"result": "", "control": {"pass": True}}},
-        }
-        with self.assertRaisesRegex(RuntimeError, "missing compiled config"):
-            module.apply_route_bindings(node, True, runtime_state)
-
 
 class DataPassthroughTests(unittest.TestCase):
-    def test_downstream_can_read_upstream_split_output(self):
+    def test_build_prompt_inputs_reads_paths(self):
         node = {
             "id": "implement",
             "input_map": {
                 "plan_result": "outputs.plan.result",
                 "plan_control": "outputs.plan.control",
-            },
-            "compiled": {
-                "input_bindings": [
-                    {
-                        "input_key": "plan_result",
-                        "source": "outputs.plan.result",
-                        "source_parts": ("outputs", "plan", "result"),
-                    },
-                    {
-                        "input_key": "plan_control",
-                        "source": "outputs.plan.control",
-                        "source_parts": ("outputs", "plan", "control"),
-                    },
-                ]
             },
         }
         runtime_state: dict[str, Any] = {
@@ -155,63 +116,16 @@ class DataPassthroughTests(unittest.TestCase):
         self.assertIn("Plan: 结论 A", rendered)
         self.assertIn('"plan_summary": "summary"', rendered)
 
-    def test_downstream_can_read_runtime_context(self):
-        node = {
-            "id": "check",
-            "input_map": {"latest_impl": "context.runtime.latest_impl"},
-            "compiled": {
-                "input_bindings": [
-                    {
-                        "input_key": "latest_impl",
-                        "source": "context.runtime.latest_impl",
-                        "source_parts": ("context", "runtime", "latest_impl"),
-                    }
-                ]
-            },
-        }
-        runtime_state: dict[str, Any] = {
-            "context": {
-                "defaults": {},
-                "runtime": {"latest_impl": {"pass": True, "change_summary": "done"}},
-            },
-            "outputs": {},
-        }
-
-        prompt_inputs = module.build_prompt_inputs(node, runtime_state)
-        self.assertEqual(prompt_inputs["latest_impl"], runtime_state["context"]["runtime"]["latest_impl"])
-
-    def test_build_prompt_inputs_reads_compiled_paths_without_revalidating_runtime(self):
-        node = {
-            "id": "implement",
-            "input_map": {"plan_output": "invalid.source.path"},
-            "compiled": {
-                "input_bindings": [
-                    {
-                        "input_key": "plan_output",
-                        "source": "invalid.source.path",
-                        "source_parts": ("outputs", "plan"),
-                    }
-                ]
-            },
-        }
-        runtime_state: dict[str, Any] = {
-            "context": {"defaults": {}, "runtime": {}},
-            "outputs": {"plan": {"result": "", "control": {"pass": True, "plan_summary": "summary"}}},
-        }
-
-        prompt_inputs = module.build_prompt_inputs(node, runtime_state)
-        self.assertEqual(prompt_inputs["plan_output"], runtime_state["outputs"]["plan"])
-
-    def test_build_prompt_inputs_requires_compiled_parts(self):
+    def test_build_prompt_inputs_requires_existing_source_path(self):
         node = {
             "id": "implement",
             "input_map": {"plan_output": "outputs.plan"},
         }
         runtime_state: dict[str, Any] = {
             "context": {"defaults": {}, "runtime": {}},
-            "outputs": {"plan": {"result": "", "control": {"pass": True}}},
+            "outputs": {},
         }
-        with self.assertRaisesRegex(RuntimeError, "missing compiled config"):
+        with self.assertRaisesRegex(RuntimeError, "Path not found"):
             module.build_prompt_inputs(node, runtime_state)
 
 

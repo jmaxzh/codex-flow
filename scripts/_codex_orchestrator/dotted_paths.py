@@ -2,37 +2,12 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-ALLOWED_SOURCE_PREFIXES = ("context.defaults.", "context.runtime.", "outputs.")
-ROUTE_BINDING_TARGET_PREFIX = "context.runtime."
-
-
-def validate_source_path(path_value: str, field_name: str) -> None:
-    if not any(path_value.startswith(prefix) for prefix in ALLOWED_SOURCE_PREFIXES):
-        raise RuntimeError(f"'{field_name}' must start with context.defaults. or context.runtime. or outputs.")
-
 
 def parse_dotted_path(path_value: str, field_name: str) -> tuple[str, ...]:
     parts = tuple(path_value.split("."))
     if not parts or any(not part for part in parts):
         raise RuntimeError(f"Invalid dotted path: {path_value} ({field_name})")
     return parts
-
-
-def compile_source_binding(source_path: str, field_name: str) -> dict[str, Any]:
-    validate_source_path(source_path, field_name)
-    return {
-        "source": source_path,
-        "source_parts": parse_dotted_path(source_path, field_name),
-    }
-
-
-def compile_runtime_target(target_path: str, field_name: str) -> dict[str, Any]:
-    if not target_path.startswith(ROUTE_BINDING_TARGET_PREFIX):
-        raise RuntimeError(f"{field_name} must start with {ROUTE_BINDING_TARGET_PREFIX}")
-    return {
-        "target": target_path,
-        "target_parts": parse_dotted_path(target_path, field_name),
-    }
 
 
 def resolve_dotted_parts(data: dict[str, Any], path_parts: tuple[str, ...], dotted_path: str) -> Any:

@@ -6,12 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
-from .config_compiler import (
-    get_compiled_history_target,
-    get_compiled_route_bindings,
-    get_compiled_success_next_node_source,
-)
-from .dotted_paths import resolve_dotted_parts, set_dotted_parts
+from .dotted_paths import parse_dotted_path, resolve_dotted_parts, set_dotted_parts
 from .fileio import write_json, write_text
 from .naming import build_step_prefix, make_run_id
 
@@ -58,11 +53,19 @@ class StepExecutionResult(NamedTuple):
 def apply_route_bindings(node: dict[str, Any], pass_flag: bool, runtime_state: dict[str, Any]) -> dict[str, str]:
     route_name = "success" if pass_flag else "failure"
     applied: dict[str, str] = {}
-    for binding in get_compiled_route_bindings(node, route_name):
-        target_path = cast(str, binding["target"])
-        source_path = cast(str, binding["source"])
-        source_parts = cast(tuple[str, ...], binding["source_parts"])
-        target_parts = cast(tuple[str, ...], binding["target_parts"])
+    route_bindings_raw = node.get("route_bindings", {})
+    if not isinstance(route_bindings_raw, dict):
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' route_bindings must be object")
+    route_bindings = cast(dict[str, Any], route_bindings_raw)
+    selected_bindings_raw = route_bindings.get(route_name, {})
+    if not isinstance(selected_bindings_raw, dict):
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' route_bindings.{route_name} must be object")
+
+    for target_path_raw, source_path_raw in cast(dict[str, Any], selected_bindings_raw).items():
+        target_path = target_path_raw
+        source_path = source_path_raw
+        source_parts = parse_dotted_path(source_path, f"route_bindings.{route_name}.{target_path}")
+        target_parts = parse_dotted_path(target_path, f"route_bindings.{route_name}.{target_path}.target")
         value: Any = resolve_dotted_parts(runtime_state, source_parts, source_path)
         if isinstance(value, dict):
             value = copy.deepcopy(cast(dict[str, Any], value))
@@ -71,38 +74,6 @@ def apply_route_bindings(node: dict[str, Any], pass_flag: bool, runtime_state: d
         set_dotted_parts(runtime_state, target_parts, target_path, value)
         applied[target_path] = source_path
     return applied
-
-
-def resolve_success_next_node(
-    *,
-    node: dict[str, Any],
-    pass_flag: bool,
-    default_next_node: str,
-    runtime_state: dict[str, Any],
-    node_ids: set[str],
-) -> str:
-    if not pass_flag:
-        return default_next_node
-
-    source_binding = get_compiled_success_next_node_source(node)
-    if source_binding is None:
-        return default_next_node
-
-    source_path = cast(str, source_binding["source"])
-    source_parts = cast(tuple[str, ...], source_binding["source_parts"])
-    try:
-        resolved = resolve_dotted_parts(runtime_state, source_parts, source_path)
-    except RuntimeError as exc:
-        if str(exc) == f"Path not found: {source_path}":
-            return default_next_node
-        raise
-
-    if not isinstance(resolved, str) or not resolved.strip():
-        raise RuntimeError(f"Node '{node['id']}' success_next_node_from resolved non-empty string required: {source_path}")
-    next_node = resolved
-    if next_node != END_NODE and next_node not in node_ids:
-        raise RuntimeError(f"Node '{node['id']}' success_next_node_from resolved invalid target: {next_node}")
-    return next_node
 
 
 def ensure_history_list(
@@ -130,24 +101,28 @@ def collect_output_history(
     node_output: Any,
     runtime_state: dict[str, Any],
 ) -> str | None:
-    history_target = get_compiled_history_target(node)
+    history_target = node.get("collect_history_to")
     if history_target is None:
         return None
-    target_path = history_target["target"]
-    current = ensure_history_list(runtime_state, target_path, history_target["target_parts"])
+    if not isinstance(history_target, str):
+        raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' collect_history_to must be string")
+    target_parts = parse_dotted_path(history_target, f"{node.get('id', '<unknown>')}.collect_history_to")
+    current = ensure_history_list(runtime_state, history_target, target_parts)
     current.append(copy.deepcopy(node_output))
-    return target_path
+    return history_target
 
 
 def initialize_history_targets(workflow_nodes: list[dict[str, Any]], runtime_state: dict[str, Any]) -> None:
     for node in workflow_nodes:
-        history_target = get_compiled_history_target(node)
+        history_target = node.get("collect_history_to")
         if history_target is None:
             continue
+        if not isinstance(history_target, str):
+            raise RuntimeError(f"Node '{node.get('id', '<unknown>')}' collect_history_to must be string")
         ensure_history_list(
             runtime_state,
-            history_target["target"],
-            history_target["target_parts"],
+            history_target,
+            parse_dotted_path(history_target, f"{node.get('id', '<unknown>')}.collect_history_to"),
         )
 
 
