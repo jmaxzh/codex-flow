@@ -6,9 +6,9 @@ TBD - created by archiving change switch-to-native-prefect-workflows. Update Pur
 ### Requirement: Built-in presets are implemented as native Prefect flows
 The system SHALL define each built-in preset workflow as a native Prefect flow in Python code, not as interpreted workflow-node DSL.
 
-#### Scenario: Implement loop preset runs as native flow
-- **WHEN** a user executes the `implement_loop` preset
-- **THEN** the orchestrator SHALL run a dedicated native Prefect flow for `implement_loop`
+#### Scenario: OpenSpec implement preset runs as native flow
+- **WHEN** a user executes the `openspec_implement` preset
+- **THEN** the orchestrator SHALL run a dedicated native Prefect flow for `openspec_implement`
 - **THEN** control flow SHALL be expressed in Python flow logic rather than interpreted from `workflow.nodes`
 
 #### Scenario: Refactor loop preset runs as native flow
@@ -21,8 +21,8 @@ The system SHALL define each built-in preset workflow as a native Prefect flow i
 - **THEN** each preset SHALL run through its own native Prefect flow
 - **THEN** review history accumulation SHALL be handled by flow runtime state updates without DSL graph compilation
 
-#### Scenario: doc_doctor preset runs as native staged flow
-- **WHEN** a user executes `doc_doctor`
+#### Scenario: OpenSpec propose preset runs as native staged flow
+- **WHEN** a user executes `openspec_propose`
 - **THEN** the orchestrator SHALL run a dedicated native Prefect flow that encodes review convergence and conditional fix routing directly in code
 
 ### Requirement: Workflow DSL graph compilation is removed from runtime path
@@ -89,4 +89,3 @@ The migration SHALL be a one-shot replacement and SHALL NOT provide runtime comp
 - **WHEN** the native Prefect migration is applied
 - **THEN** built-in preset execution SHALL use only native flow dispatch
 - **THEN** the system SHALL NOT expose a switch to choose legacy DSL execution path
-

@@ -8,13 +8,13 @@ class NativeRegistryTests(unittest.TestCase):
     def test_registry_contains_all_builtin_presets(self):
         self.assertEqual(
             set(module.list_builtin_preset_identifiers()),
-            {"implement_loop", "refactor_loop", "reviewer_loop", "doc_reviewer_loop", "doc_doctor"},
+            {"openspec_implement", "openspec_propose", "refactor_loop", "reviewer_loop", "doc_reviewer_loop"},
         )
 
     def test_registry_identifier_list_is_sorted(self):
         self.assertEqual(
             module.list_builtin_preset_identifiers(),
-            ["doc_doctor", "doc_reviewer_loop", "implement_loop", "refactor_loop", "reviewer_loop"],
+            ["doc_reviewer_loop", "openspec_implement", "openspec_propose", "refactor_loop", "reviewer_loop"],
         )
 
 

@@ -234,7 +234,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--preset",
         required=True,
-        help="Built-in preset identifier, e.g. implement_loop",
+        help="Built-in preset identifier, e.g. openspec_implement",
     )
     parser.add_argument(
         "--context",

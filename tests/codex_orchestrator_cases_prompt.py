@@ -19,7 +19,7 @@ class PromptRenderingTests(unittest.TestCase):
         return module.render_prompt(
             prompt,
             prompt_inputs or {},
-            config_path or str(Path.cwd() / "presets" / "implement_loop.yaml"),
+            config_path or str(Path.cwd() / "presets" / "openspec_implement.yaml"),
             node_id,
             prompt_field,
         )
@@ -97,6 +97,29 @@ class PromptRenderingTests(unittest.TestCase):
 
         self.assertEqual(rendered, "SAME + SAME")
 
+    def test_render_prompt_renders_inputs_inside_included_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            cfg = base / "preset.yaml"
+            outer = base / "prompts" / "outer.md"
+            inner = base / "prompts" / "inner.md"
+
+            outer.parent.mkdir(parents=True, exist_ok=True)
+            outer.write_text(
+                'A={{ inputs.a }} / {{ prompt_file("./prompts/inner.md") }}',
+                encoding="utf-8",
+            )
+            inner.write_text("B={{ inputs.b }}", encoding="utf-8")
+            cfg.write_text("{}", encoding="utf-8")
+
+            rendered = self._render(
+                '{{ prompt_file("./prompts/outer.md") }}',
+                {"a": "x", "b": "y"},
+                str(cfg),
+            )
+
+        self.assertEqual(rendered, "A=x / B=y")
+
     def test_render_prompt_fails_for_invalid_helper_calls(self):
         with self.assertRaisesRegex(RuntimeError, "missing 1 required positional argument"):
             self._render("{{ prompt_file() }}")
@@ -135,9 +158,9 @@ class PromptPathResolutionWorkflowTests(unittest.TestCase):
         call_counter = {"check": 0}
 
         def raw_output_for_call(*, node_id: str, **_kwargs: Any) -> str:
-            if node_id == "implement_first":
+            if node_id == "openspec_implement_first":
                 return "implemented"
-            if node_id == "check":
+            if node_id == "openspec_implement_review":
                 call_counter["check"] += 1
                 if call_counter["check"] == 1:
                     return '{"pass": true}'
@@ -149,7 +172,7 @@ class PromptPathResolutionWorkflowTests(unittest.TestCase):
             captured_prompts=captured_prompts,
         )
         with patch_native_exec(fake_exec):
-            run_workflow_direct("implement_loop", {"spec": "x", "user_instruction": "u", "__max_steps": "2"}, str(launch_cwd))
+            run_workflow_direct("openspec_implement", {"spec": "x", "user_instruction": "u", "__max_steps": "2"}, str(launch_cwd))
 
     def test_include_resolution_is_consistent_across_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -176,3 +199,23 @@ class PromptPathResolutionWorkflowTests(unittest.TestCase):
             self._run_with_include(launch_cwd, prompts)
             self.assertEqual(len(prompts), 2)
             self.assertIn("任务: x", prompts[0])
+
+    def test_openspec_prompt_assets_are_loaded_from_prompt_file(self):
+        captured_prompts: list[str] = []
+
+        def raw_output_for_call(*, node_id: str, **_kwargs: Any) -> str:
+            if node_id == "openspec_implement_first":
+                return "implemented"
+            return '{"pass": true}'
+
+        fake_exec = make_fake_codex_exec(
+            raw_output_for_call=cast(Callable[..., str], raw_output_for_call),
+            captured_prompts=captured_prompts,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch_native_exec(fake_exec):
+                run_workflow_direct("openspec_implement", {"spec": "x", "user_instruction": "u", "__max_steps": "2"}, tmp)
+
+        self.assertGreaterEqual(len(captured_prompts), 2)
+        self.assertIn("任务: x", captured_prompts[0])
+        self.assertIn("若全部完成，pass=true", captured_prompts[1])

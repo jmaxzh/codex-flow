@@ -109,7 +109,7 @@ class DataPassthroughTests(unittest.TestCase):
         rendered = module.render_prompt(
             "Plan: {{ inputs.plan_result }} | Control: {{ inputs.plan_control }}",
             prompt_inputs,
-            str(ROOT / "presets" / "implement_loop.yaml"),
+            str(ROOT / "presets" / "openspec_implement.yaml"),
             "implement",
             "workflow.nodes[1].prompt",
         )

@@ -4,9 +4,9 @@ from collections.abc import Callable
 from typing import Any
 
 from .presets import (
-    run_doc_doctor_flow,
     run_doc_reviewer_loop_flow,
-    run_implement_loop_flow,
+    run_openspec_implement_flow,
+    run_openspec_propose_flow,
     run_refactor_loop_flow,
     run_reviewer_loop_flow,
 )
@@ -14,11 +14,11 @@ from .presets import (
 FlowRunner = Callable[[dict[str, str], str], dict[str, Any]]
 
 BUILTIN_FLOW_REGISTRY: dict[str, FlowRunner] = {
-    "implement_loop": run_implement_loop_flow,
+    "openspec_implement": run_openspec_implement_flow,
+    "openspec_propose": run_openspec_propose_flow,
     "refactor_loop": run_refactor_loop_flow,
     "reviewer_loop": run_reviewer_loop_flow,
     "doc_reviewer_loop": run_doc_reviewer_loop_flow,
-    "doc_doctor": run_doc_doctor_flow,
 }
 
 

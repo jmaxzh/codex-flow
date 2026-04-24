@@ -19,17 +19,26 @@ class CliHelperTests(unittest.TestCase):
             module.parse_context_overrides([["a.b", "x"]])
 
     def test_resolve_main_config_validates_preset(self):
-        preset_id, overrides = module.resolve_main_config("implement_loop", [["spec", "s"]])
-        self.assertEqual(preset_id, "implement_loop")
+        preset_id, overrides = module.resolve_main_config("openspec_implement", [["spec", "s"]])
+        self.assertEqual(preset_id, "openspec_implement")
         self.assertEqual(overrides, {"spec": "s"})
 
     def test_resolve_main_config_rejects_unknown_preset_with_available_list(self):
         with self.assertRaisesRegex(
             RuntimeError,
             "Unknown preset identifier: 'missing'.*Available built-in presets: "
-            "doc_doctor, doc_reviewer_loop, implement_loop, refactor_loop, reviewer_loop",
+            "doc_reviewer_loop, openspec_implement, openspec_propose, refactor_loop, reviewer_loop",
         ):
             module.resolve_main_config("missing", None)
+
+    def test_resolve_main_config_rejects_legacy_preset_identifiers(self):
+        for legacy_id in ("implement_loop", "doc_doctor"):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Unknown preset identifier: '.*'.*Available built-in presets: "
+                "doc_reviewer_loop, openspec_implement, openspec_propose, refactor_loop, reviewer_loop",
+            ):
+                module.resolve_main_config(legacy_id, None)
 
     def test_validate_preset_identifier_is_cwd_independent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -40,30 +49,33 @@ class CliHelperTests(unittest.TestCase):
             cwd_b.mkdir(parents=True, exist_ok=True)
             try:
                 os.chdir(cwd_a)
-                a = module.resolve_main_config("implement_loop", None)[0]
+                a = module.resolve_main_config("openspec_implement", None)[0]
                 os.chdir(cwd_b)
-                b = module.resolve_main_config("implement_loop", None)[0]
+                b = module.resolve_main_config("openspec_implement", None)[0]
             finally:
                 os.chdir(original_cwd)
         self.assertEqual(a, b)
-        self.assertEqual(a, "implement_loop")
+        self.assertEqual(a, "openspec_implement")
 
     def test_validate_preset_identifier_rejects_path_like_value(self):
         with self.assertRaisesRegex(RuntimeError, "expects a preset identifier"):
-            module.resolve_main_config("presets/implement_loop.yaml", None)
+            module.resolve_main_config("presets/openspec_implement.yaml", None)
 
     def test_validate_preset_identifier_rejects_empty_or_whitespace_value(self):
         with self.assertRaisesRegex(RuntimeError, "non-empty preset identifier"):
             module.resolve_main_config("   ", None)
 
     def test_validate_preset_identifier_rejects_yaml_suffix_with_migration_hint(self):
-        with self.assertRaisesRegex(RuntimeError, "Use 'implement_loop' instead of 'implement_loop.yaml'"):
-            module.resolve_main_config("implement_loop.yaml", None)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Use 'openspec_implement' instead of 'openspec_implement.yaml'",
+        ):
+            module.resolve_main_config("openspec_implement.yaml", None)
 
 
 class MainCliContractTests(unittest.TestCase):
     def test_main_dependency_error_uses_unified_stderr_path(self):
-        args = type("Args", (), {"preset": "implement_loop", "context": None})()
+        args = type("Args", (), {"preset": "openspec_implement", "context": None})()
         with patch.object(module, "parse_args", return_value=args):
             with patch.object(module, "PREFECT_IMPORT_ERROR", RuntimeError("prefect missing")):
                 with patch("sys.stderr") as fake_stderr:
@@ -77,7 +89,7 @@ class MainCliContractTests(unittest.TestCase):
             "Args",
             (),
             {
-                "preset": "implement_loop",
+                "preset": "openspec_implement",
                 "context": [["spec", "s1"], ["spec", "s2"], ["user_instruction", "u2"]],
             },
         )()
@@ -112,6 +124,6 @@ class MainCliContractTests(unittest.TestCase):
                 os.chdir(original_cwd)
 
         self.assertEqual(exit_code, 0)
-        get_runner_mock.assert_called_once_with("implement_loop")
+        get_runner_mock.assert_called_once_with("openspec_implement")
         self.assertEqual(captured["context_overrides"], {"spec": "s2", "user_instruction": "u2"})
         self.assertEqual(captured["launch_cwd"], str(Path(tmp).resolve()))

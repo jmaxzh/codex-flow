@@ -22,7 +22,7 @@ def validate_preset_identifier(preset_value: str) -> str:
         raise RuntimeError("--preset requires a non-empty preset identifier")
     if "/" in preset_id or "\\" in preset_id:
         raise RuntimeError(
-            "--preset expects a preset identifier (for example: implement_loop), not a path. "
+            "--preset expects a preset identifier (for example: openspec_implement), not a path. "
             "If you used a preset file path before, move or reference that preset under repository "
             "presets/ and pass only its identifier."
         )

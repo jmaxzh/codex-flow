@@ -5,25 +5,25 @@
 ## 快速开始
 
 ```bash
-python3 scripts/codex_automation_loops.py --preset implement_loop
+python3 scripts/codex_automation_loops.py --preset openspec_implement
 ```
 
 带上下文覆盖（可重复 `--context`，同 key 后写覆盖前写）：
 
 ```bash
 python3 scripts/codex_automation_loops.py \
-  --preset implement_loop \
+  --preset openspec_implement \
   --context spec docs/new-spec.md \
   --context user_instruction "请先完成 API 层"
 ```
 
 ## 可用内置 Preset
 
-- `implement_loop`
+- `openspec_implement`
+- `openspec_propose`
 - `refactor_loop`
 - `reviewer_loop`
 - `doc_reviewer_loop`
-- `doc_doctor`
 
 ## 文档导航
 
@@ -33,7 +33,7 @@ python3 scripts/codex_automation_loops.py \
 - preset 标识符解析与校验：`docs/specs/preset-enum-resolution/spec.md`
 - 节点输出（`result/control`）契约：`docs/specs/node-output-contract/spec.md`
 - prompt 文件引用与渲染规则：`docs/specs/prompt-file-reference/spec.md`
-- `doc_doctor` 预设语义：`docs/specs/doc-doctor-preset/spec.md`
+- `openspec_propose` 预设语义：`docs/specs/openspec-propose-preset/spec.md`
 - workflow 组合/弃用字段约束：`docs/specs/preset-workflow-composition/spec.md`
 - Python 质量门禁规范：`docs/specs/python-quality-gate/spec.md`
 
@@ -71,5 +71,6 @@ python3 -m pytest -q
 ## 迁移说明
 
 - `--preset` 接受内置 preset 标识符，不接受 YAML 路径
+- 旧名称 `implement_loop` / `doc_doctor` 已移除，传入时会报 unknown preset 并显示新可用列表
 - `workflow.imports` / `node_overrides` 等旧 YAML DSL 组合能力已移除
 - 现有行为以 `scripts/_codex_orchestrator/native_workflows/` 与 `docs/specs/` 为准
