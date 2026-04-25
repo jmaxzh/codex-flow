@@ -25,16 +25,16 @@ def _openspec_implement_stages() -> dict[str, StageSpec]:
                 "spec": "context.defaults.spec",
             },
             "on_success": "END",
-            "on_failure": "openspec_implement_fix",
+            "on_failure": "openspec_implement_continue",
             "route_bindings": {
                 "failure": {
                     "context.runtime.latest_check": "outputs.openspec_implement_review.control",
                 }
             },
         },
-        "openspec_implement_fix": {
-            "id": "openspec_implement_fix",
-            "prompt": '{{ prompt_file("./openspec_implement_fix.md") }}',
+        "openspec_implement_continue": {
+            "id": "openspec_implement_continue",
+            "prompt": '{{ prompt_file("./openspec_implement_continue.md") }}',
             "input_map": {
                 "spec": "context.defaults.spec",
                 "latest_check": "context.runtime.latest_check",
@@ -44,7 +44,7 @@ def _openspec_implement_stages() -> dict[str, StageSpec]:
             "on_failure": "END",
             "route_bindings": {
                 "success": {
-                    "context.runtime.latest_impl": "outputs.openspec_implement_fix",
+                    "context.runtime.latest_impl": "outputs.openspec_implement_continue",
                 }
             },
         },

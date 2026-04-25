@@ -17,7 +17,7 @@
 
 **Purpose**: Prepare target prompt assets and shared test scaffolding before behavior changes.
 
-- [X] T001 Create prompt asset files `presets/prompts/openspec_implement_implement_first.md`, `presets/prompts/openspec_implement_review.md`, `presets/prompts/openspec_implement_fix.md`, `presets/prompts/openspec_propose_review.md`, and `presets/prompts/openspec_propose_revise.md`
+- [X] T001 Create prompt asset files `presets/prompts/openspec_implement_implement_first.md`, `presets/prompts/openspec_implement_review.md`, `presets/prompts/openspec_implement_continue.md`, `presets/prompts/openspec_propose_review.md`, and `presets/prompts/openspec_propose_revise.md`
 - [X] T002 [P] Add reusable prompt-asset fixture/helpers for OpenSpec presets in `tests/codex_orchestrator_cases_prompt.py`
 
 ---
@@ -74,7 +74,7 @@
 ### Implementation for User Story 2
 
 - [X] T016 [US2] Move OpenSpec implement-first prompt body to `presets/prompts/openspec_implement_implement_first.md`
-- [X] T017 [US2] Move OpenSpec implement-check/loop prompt bodies to `presets/prompts/openspec_implement_review.md` and `presets/prompts/openspec_implement_fix.md`
+- [X] T017 [US2] Move OpenSpec implement-check/loop prompt bodies to `presets/prompts/openspec_implement_review.md` and `presets/prompts/openspec_implement_continue.md`
 - [X] T018 [US2] Move OpenSpec propose review/fix prompt bodies to `presets/prompts/openspec_propose_review.md` and `presets/prompts/openspec_propose_revise.md`
 - [X] T019 [US2] Replace inline multiline prompts with `prompt_file("./openspec_*.md")` wiring in `scripts/_codex_orchestrator/native_workflows/presets.py`
 
@@ -164,7 +164,7 @@ Task T013 -> tests/codex_orchestrator_cases_runtime.py
 
 ```bash
 # Parallel prompt asset extraction:
-Task T017 -> presets/prompts/openspec_implement_review.md + presets/prompts/openspec_implement_fix.md
+Task T017 -> presets/prompts/openspec_implement_review.md + presets/prompts/openspec_implement_continue.md
 Task T018 -> presets/prompts/openspec_propose_review.md + presets/prompts/openspec_propose_revise.md
 
 # Parallel validation tasks:

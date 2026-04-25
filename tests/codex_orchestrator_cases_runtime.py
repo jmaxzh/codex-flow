@@ -20,7 +20,7 @@ class NativeFlowRuntimeTests(unittest.TestCase):
                     return {"pass": True, "node": node_id, "step": step}
                 if node_id == "openspec_implement_review" and attempt == 1:
                     return {"pass": False, "node": node_id, "todo": ["missing part"]}
-                if node_id == "openspec_implement_fix":
+                if node_id == "openspec_implement_continue":
                     return {"pass": True, "node": node_id, "fixed": ["missing part"]}
                 if node_id == "openspec_implement_review" and attempt == 2:
                     return {"pass": True, "node": node_id, "todo": []}
@@ -33,14 +33,14 @@ class NativeFlowRuntimeTests(unittest.TestCase):
             self.assertEqual(summary["status"], "completed")
             self.assertEqual(summary["final_node"], "END")
             self.assertIn("openspec_implement_first", summary["outputs"])
-            self.assertIn("openspec_implement_fix", summary["outputs"])
+            self.assertIn("openspec_implement_continue", summary["outputs"])
             self.assertIn("openspec_implement_review", summary["outputs"])
             self.assertEqual(summary["outputs"]["openspec_implement_review"]["control"]["pass"], True)
 
             runtime_state = json.loads((Path(summary["run_state_dir"]) / "runtime_state.json").read_text(encoding="utf-8"))
             self.assertIsInstance(runtime_state["context"]["runtime"]["latest_impl"], str)
             latest_impl_node = json.loads(runtime_state["context"]["runtime"]["latest_impl"])["node"]
-            self.assertEqual(latest_impl_node, "openspec_implement_fix")
+            self.assertEqual(latest_impl_node, "openspec_implement_continue")
             self.assertEqual(runtime_state["context"]["runtime"]["latest_check"]["node"], "openspec_implement_review")
 
     def test_run_state_isolation(self):
