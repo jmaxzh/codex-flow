@@ -1,2 +1,3 @@
-任务: {{ inputs.spec }}
-用户要求: {{ inputs.user_instruction }}
+使用 openspec apply change 实现 {{ inputs.spec }}.
+
+{{ inputs.user_instruction }}

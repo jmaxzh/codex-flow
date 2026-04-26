@@ -79,8 +79,8 @@ def run_openspec_implement_flow(context_overrides: dict[str, str], launch_cwd: s
             launch_cwd=launch_cwd,
             context_overrides=context_overrides,
             defaults={
-                "spec": "docs/prefect-codex-implement-loop-plan.md",
-                "user_instruction": "请按规格完成。",
+                "spec": "",
+                "user_instruction": "",
             },
             max_steps=50,
             start_node="openspec_implement_first",
