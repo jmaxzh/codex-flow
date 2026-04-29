@@ -4,7 +4,10 @@ line-length = 130
 src = ["scripts", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "C90", "PLR0912", "PLR0911", "PLR0913", "PLR0915"]
+select = ["E", "F", "W", "I", "UP", "C90", "PLR0912", "PLR0911", "PLR0913", "PLR0915", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10

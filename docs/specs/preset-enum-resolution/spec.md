@@ -62,15 +62,15 @@ New built-in presets MUST resolve via the same identifier lookup semantics.
 - **THEN** both resolutions SHALL point to the same built-in native flow identifier
 - **THEN** resolution SHALL NOT depend on invocation `cwd`
 
-### Requirement: Legacy identifiers are rejected with migration guidance
-Legacy preset identifiers from previous contracts MUST be rejected as unknown and surfaced with the new available list.
+### Requirement: Legacy and openspec identifiers coexist for backward compatibility
+Legacy preset identifiers from previous contracts MUST remain available while openspec identifiers are also supported.
 
-#### Scenario: implement_loop is rejected after migration
+#### Scenario: implement_loop remains resolvable after openspec rollout
 - **WHEN** a user passes `--preset implement_loop`
-- **THEN** execution SHALL fail with unknown preset diagnostics
-- **THEN** the available list SHALL include `openspec_implement` and `openspec_propose`
+- **THEN** the system SHALL resolve it to the built-in native flow implementation for `implement_loop`
+- **THEN** `openspec_implement` and `openspec_propose` SHALL remain valid built-in preset identifiers
 
-#### Scenario: doc_doctor is rejected after migration
+#### Scenario: doc_doctor remains resolvable after openspec rollout
 - **WHEN** a user passes `--preset doc_doctor`
-- **THEN** execution SHALL fail with unknown preset diagnostics
-- **THEN** the available list SHALL include `openspec_implement` and `openspec_propose`
+- **THEN** the system SHALL resolve it to the built-in native flow implementation for `doc_doctor`
+- **THEN** `openspec_implement` and `openspec_propose` SHALL remain valid built-in preset identifiers

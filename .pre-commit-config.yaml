@@ -38,7 +38,7 @@ repos:
     hooks:
       - id: basedpyright
         name: basedpyright-strict
-        entry: basedpyright --warnings scripts tests
+        entry: python3 -m basedpyright --warnings scripts tests
         language: system
         files: ^(scripts|tests)/.*\.py$
         always_run: true

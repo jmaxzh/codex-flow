@@ -11,19 +11,27 @@ The system SHALL define each built-in preset workflow as a native Prefect flow i
 - **THEN** the orchestrator SHALL run a dedicated native Prefect flow for `openspec_implement`
 - **THEN** control flow SHALL be expressed in Python flow logic rather than interpreted from `workflow.nodes`
 
-#### Scenario: Refactor loop preset runs as native flow
-- **WHEN** a user executes the `refactor_loop` preset
-- **THEN** the orchestrator SHALL run a dedicated native Prefect flow for `refactor_loop`
+#### Scenario: Quality review loop preset runs as native flow
+- **WHEN** a user executes the `quality_review_loop` preset
+- **THEN** the orchestrator SHALL run a dedicated native Prefect flow for `quality_review_loop`
 - **THEN** loop continuation SHALL be decided by flow code using parsed node control semantics
 
 #### Scenario: Reviewer presets run as native flows
-- **WHEN** a user executes `reviewer_loop` or `doc_reviewer_loop`
+- **WHEN** a user executes `bug_review_loop` or `doc_review_loop`
 - **THEN** each preset SHALL run through its own native Prefect flow
 - **THEN** review history accumulation SHALL be handled by flow runtime state updates without DSL graph compilation
 
 #### Scenario: OpenSpec propose preset runs as native staged flow
 - **WHEN** a user executes `openspec_propose`
 - **THEN** the orchestrator SHALL run a dedicated native Prefect flow that encodes review convergence and conditional fix routing directly in code
+
+### Requirement: Preset module directory contains only per-preset workflow modules
+The `scripts/_codex_orchestrator/native_workflows/presets/` directory MUST contain only files where each file represents one preset workflow definition; shared helper modules MUST live outside this directory.
+
+#### Scenario: Shared workflow helpers are stored in dedicated common directory
+- **WHEN** implementation requires reusable workflow helper code across multiple presets
+- **THEN** that helper code SHALL be placed under `scripts/_codex_orchestrator/native_workflows/preset_common/` (or another non-`presets/` common location)
+- **THEN** files under `scripts/_codex_orchestrator/native_workflows/presets/` SHALL remain per-preset workflow modules only
 
 ### Requirement: Workflow DSL graph compilation is removed from runtime path
 The system MUST NOT require workflow graph compilation from `workflow.nodes`-style DSL for built-in preset execution.

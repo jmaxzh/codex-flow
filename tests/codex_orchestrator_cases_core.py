@@ -1,7 +1,7 @@
 import unittest
 from typing import Any, cast
 
-from tests.codex_orchestrator_test_support import ROOT, module
+from tests.codex_orchestrator_module_loader import ROOT, module
 
 
 class OutputContractTests(unittest.TestCase):

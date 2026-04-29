@@ -19,11 +19,13 @@ python3 scripts/codex_automation_loops.py \
 
 ## 可用内置 Preset
 
+- `bug_review_loop`
+- `doc_doctor`
+- `doc_review_loop`
+- `implement_loop`
 - `openspec_implement`
 - `openspec_propose`
-- `refactor_loop`
-- `reviewer_loop`
-- `doc_reviewer_loop`
+- `quality_review_loop`
 
 ## 文档导航
 
@@ -67,10 +69,3 @@ python3 -m pytest -q
 ```bash
 ./scripts/setup_hooks.sh
 ```
-
-## 迁移说明
-
-- `--preset` 接受内置 preset 标识符，不接受 YAML 路径
-- 旧名称 `implement_loop` / `doc_doctor` 已移除，传入时会报 unknown preset 并显示新可用列表
-- `workflow.imports` / `node_overrides` 等旧 YAML DSL 组合能力已移除
-- 现有行为以 `scripts/_codex_orchestrator/native_workflows/` 与 `docs/specs/` 为准

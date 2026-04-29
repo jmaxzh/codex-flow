@@ -1,20 +1,36 @@
 import unittest
 from typing import Any
 
-from tests.codex_orchestrator_test_support import module
+from tests.codex_orchestrator_module_loader import module
 
 
 class NativeRegistryTests(unittest.TestCase):
     def test_registry_contains_all_builtin_presets(self):
         self.assertEqual(
             set(module.list_builtin_preset_identifiers()),
-            {"openspec_implement", "openspec_propose", "refactor_loop", "reviewer_loop", "doc_reviewer_loop"},
+            {
+                "bug_review_loop",
+                "doc_doctor",
+                "doc_review_loop",
+                "implement_loop",
+                "openspec_implement",
+                "openspec_propose",
+                "quality_review_loop",
+            },
         )
 
     def test_registry_identifier_list_is_sorted(self):
         self.assertEqual(
             module.list_builtin_preset_identifiers(),
-            ["doc_reviewer_loop", "openspec_implement", "openspec_propose", "refactor_loop", "reviewer_loop"],
+            [
+                "bug_review_loop",
+                "doc_doctor",
+                "doc_review_loop",
+                "implement_loop",
+                "openspec_implement",
+                "openspec_propose",
+                "quality_review_loop",
+            ],
         )
 
 
